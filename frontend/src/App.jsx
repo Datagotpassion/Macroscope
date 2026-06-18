@@ -3,6 +3,7 @@ import PlateView from "./PlateView";
 import WellDetail from "./WellDetail";
 import TimelapseControl from "./TimelapseControl";
 import Settings from "./Settings";
+import { useI18n } from "./i18n.jsx";
 import {
   capture,
   getStatus,
@@ -11,6 +12,7 @@ import {
 } from "./api";
 
 export default function App() {
+  const { t, toggle } = useI18n();
   const [wells, setWells] = React.useState([]);
   const [selected, setSelected] = React.useState(null);
   const [plateUrl, setPlateUrl] = React.useState(null);
@@ -29,8 +31,8 @@ export default function App() {
 
   React.useEffect(() => {
     refreshStatus();
-    const t = setInterval(refreshStatus, 5000);
-    return () => clearInterval(t);
+    const timer = setInterval(refreshStatus, 5000);
+    return () => clearInterval(timer);
   }, [refreshStatus]);
 
   // 拍照 + 检测孔位 (F1, F3)
@@ -63,7 +65,7 @@ export default function App() {
         <h1 className="text-2xl font-bold">
           🔬 PlateScope
           <span className="ml-2 text-sm font-normal text-slate-400">
-            96 孔板成像
+            {t("subtitle")}
           </span>
         </h1>
         <div className="flex gap-2">
@@ -72,7 +74,7 @@ export default function App() {
             disabled={busy}
             className="rounded bg-blue-600 px-4 py-2 font-medium hover:bg-blue-500 disabled:opacity-50"
           >
-            {busy ? "拍摄中…" : "拍摄全板"}
+            {busy ? t("capturing") : t("capture")}
           </button>
           <button
             onClick={() => setLivePreview((v) => !v)}
@@ -80,7 +82,14 @@ export default function App() {
               livePreview ? "bg-red-600 hover:bg-red-500" : "bg-slate-700 hover:bg-slate-600"
             }`}
           >
-            {livePreview ? "关闭预览" : "实时预览"}
+            {livePreview ? t("stopPreview") : t("livePreview")}
+          </button>
+          <button
+            onClick={toggle}
+            title="Language / 语言"
+            className="rounded border border-slate-600 px-3 py-2 text-sm font-medium hover:bg-slate-700"
+          >
+            {t("switchTo")}
           </button>
         </div>
       </header>
@@ -90,7 +99,7 @@ export default function App() {
         <div className="lg:col-span-2">
           {livePreview ? (
             <div className="space-y-2">
-              <div className="text-sm text-slate-400">实时预览 (~10 fps)</div>
+              <div className="text-sm text-slate-400">{t("previewHeader")}</div>
               {previewUrl ? (
                 <img
                   src={previewUrl}
@@ -99,7 +108,7 @@ export default function App() {
                 />
               ) : (
                 <div className="flex h-96 items-center justify-center rounded-lg border border-slate-700 text-slate-500">
-                  连接中…
+                  {t("connecting")}
                 </div>
               )}
             </div>
@@ -112,18 +121,18 @@ export default function App() {
             />
           ) : (
             <div className="flex h-96 items-center justify-center rounded-lg border border-dashed border-slate-700 text-slate-500">
-              点击「拍摄全板」开始
+              {t("captureHint")}
             </div>
           )}
           {wells.length > 0 && !livePreview && (
             <div className="mt-2 text-sm text-slate-400">
-              检测到 {wells.length} 孔 ·{" "}
+              {t("wellsDetected", wells.length)} ·{" "}
               <span className="text-green-400">
-                {wells.filter((w) => w.detected).length} 直接检测
+                {t("wellsDirect", wells.filter((w) => w.detected).length)}
               </span>{" "}
               ·{" "}
               <span className="text-orange-400">
-                {wells.filter((w) => !w.detected).length} 网格补全
+                {t("wellsFilled", wells.filter((w) => !w.detected).length)}
               </span>
             </div>
           )}

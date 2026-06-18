@@ -36,6 +36,10 @@ detector = PlateDetector()
 store = ImageStore()
 scheduler = Scheduler(camera, store)
 
+# 实时预览参数。FPS 是目标上限,实际受相机/编码速度限制。
+PREVIEW_FPS = 25
+PREVIEW_QUALITY = 65
+
 
 def _encode_jpeg(image, quality: int = 90) -> bytes:
     ok, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, quality])
@@ -154,19 +158,39 @@ async def get_frame(name: str, frame: str):
 
 @app.websocket("/ws/preview")
 async def preview(ws: WebSocket):
-    """低分辨率连续帧推送到浏览器 (~10 fps)。"""
+    """低分辨率连续帧推送到浏览器。
+
+    帧率提升:
+    - 自适应节流——只补足目标帧间隔剩下的时间,而不是固定 sleep(0.1) 死锁在 10fps;
+    - 流水线——在发送上一帧的同时,后台线程已经在抓下一帧 (抓帧和编码/网络发送重叠);
+    - 预览质量 65,体积更小、编码更快。
+    """
     await ws.accept()
+    loop = asyncio.get_event_loop()
+    interval = 1.0 / PREVIEW_FPS
+    next_frame: asyncio.Task | None = None
     try:
+        # 先抓第一帧,之后边发边抓下一帧
+        next_frame = asyncio.create_task(asyncio.to_thread(camera.capture_array, True))
         while True:
-            # 在线程里拍照,避免阻塞事件循环;preview=True 用低分辨率模式
-            frame = await asyncio.to_thread(camera.capture_array, True)
-            jpeg = await asyncio.to_thread(_encode_jpeg, frame, 70)
+            t0 = loop.time()
+            frame = await next_frame
+            # 立刻安排下一帧的抓取,与本帧的编码/发送并行
+            next_frame = asyncio.create_task(
+                asyncio.to_thread(camera.capture_array, True)
+            )
+            jpeg = await asyncio.to_thread(_encode_jpeg, frame, PREVIEW_QUALITY)
             await ws.send_bytes(jpeg)
-            await asyncio.sleep(0.1)  # ~10 fps
+            # 只睡剩余时间;若处理已超过一帧预算就不睡
+            await asyncio.sleep(max(0.0, interval - (loop.time() - t0)))
     except (WebSocketDisconnect, asyncio.CancelledError):
         pass
     except Exception as exc:  # 串流出错时优雅关闭
         _log(f"[preview] 串流结束: {exc!r}")
+    finally:
+        # 取消可能仍在跑的预抓取任务,避免悬挂
+        if next_frame is not None and not next_frame.done():
+            next_frame.cancel()
 
 
 # ── 前端静态文件 ──

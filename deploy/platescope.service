@@ -1,0 +1,23 @@
+[Unit]
+Description=PlateScope 96-well plate imaging server
+# 等网络就绪再启动 (这样 --host 0.0.0.0 能正常绑定,局域网可访问)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=kdcberry
+Group=kdcberry
+# 直接用 venv 里的 uvicorn —— 不需要 source activate
+WorkingDirectory=/home/kdcberry/Macroscope/backend
+ExecStart=/home/kdcberry/Macroscope/backend/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+# 相机/GPU 设备访问 (IMX477)
+SupplementaryGroups=video
+# 日志即时刷新 + UTF-8 中文日志不会因编码报错
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONIOENCODING=utf-8
+# 崩溃自动重启
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

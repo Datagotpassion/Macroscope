@@ -1,0 +1,17 @@
+# PlateScope 后端依赖
+# 注意: picamera2 只在树莓派上安装 (系统包: sudo apt install python3-picamera2),
+# 不在 pip 里,所以这里不列。开发机上 camera.py 会自动回退到 MockCamera。
+
+fastapi>=0.110
+uvicorn[standard]>=0.27
+opencv-python>=4.8
+numpy>=1.24
+apscheduler>=3.10
+pillow>=10.0
+pydantic>=2.0
+tifffile>=2024.1
+scipy>=1.11
+websockets>=12.0
+
+# 测试
+pytest>=8.0

@@ -1,0 +1,141 @@
+import React from "react";
+import PlateView from "./PlateView";
+import WellDetail from "./WellDetail";
+import TimelapseControl from "./TimelapseControl";
+import Settings from "./Settings";
+import {
+  capture,
+  getStatus,
+  openPreview,
+  plateImageUrl,
+} from "./api";
+
+export default function App() {
+  const [wells, setWells] = React.useState([]);
+  const [selected, setSelected] = React.useState(null);
+  const [plateUrl, setPlateUrl] = React.useState(null);
+  const [status, setStatus] = React.useState(null);
+  const [previewUrl, setPreviewUrl] = React.useState(null);
+  const [livePreview, setLivePreview] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+
+  const refreshStatus = React.useCallback(async () => {
+    try {
+      setStatus(await getStatus());
+    } catch {
+      /* 后端未就绪时忽略 */
+    }
+  }, []);
+
+  React.useEffect(() => {
+    refreshStatus();
+    const t = setInterval(refreshStatus, 5000);
+    return () => clearInterval(t);
+  }, [refreshStatus]);
+
+  // 拍照 + 检测孔位 (F1, F3)
+  const doCapture = async () => {
+    setBusy(true);
+    try {
+      const data = await capture();
+      setWells(data.wells);
+      setPlateUrl(plateImageUrl(true)); // 带标注的全板图
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // 实时预览开关 (F2)
+  React.useEffect(() => {
+    if (!livePreview) return;
+    const ws = openPreview((url) => {
+      setPreviewUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return url;
+      });
+    });
+    return () => ws.close();
+  }, [livePreview]);
+
+  return (
+    <div className="mx-auto max-w-7xl p-4">
+      <header className="mb-4 flex items-center justify-between">
+        <h1 className="text-2xl font-bold">
+          🔬 PlateScope
+          <span className="ml-2 text-sm font-normal text-slate-400">
+            96 孔板成像
+          </span>
+        </h1>
+        <div className="flex gap-2">
+          <button
+            onClick={doCapture}
+            disabled={busy}
+            className="rounded bg-blue-600 px-4 py-2 font-medium hover:bg-blue-500 disabled:opacity-50"
+          >
+            {busy ? "拍摄中…" : "拍摄全板"}
+          </button>
+          <button
+            onClick={() => setLivePreview((v) => !v)}
+            className={`rounded px-4 py-2 font-medium ${
+              livePreview ? "bg-red-600 hover:bg-red-500" : "bg-slate-700 hover:bg-slate-600"
+            }`}
+          >
+            {livePreview ? "关闭预览" : "实时预览"}
+          </button>
+        </div>
+      </header>
+
+      <div className="grid gap-4 lg:grid-cols-3">
+        {/* 左:全板视图 / 实时预览 */}
+        <div className="lg:col-span-2">
+          {livePreview ? (
+            <div className="space-y-2">
+              <div className="text-sm text-slate-400">实时预览 (~10 fps)</div>
+              {previewUrl ? (
+                <img
+                  src={previewUrl}
+                  alt="live"
+                  className="w-full rounded-lg border border-slate-700"
+                />
+              ) : (
+                <div className="flex h-96 items-center justify-center rounded-lg border border-slate-700 text-slate-500">
+                  连接中…
+                </div>
+              )}
+            </div>
+          ) : plateUrl ? (
+            <PlateView
+              wells={wells}
+              imageUrl={plateUrl}
+              selected={selected}
+              onSelect={setSelected}
+            />
+          ) : (
+            <div className="flex h-96 items-center justify-center rounded-lg border border-dashed border-slate-700 text-slate-500">
+              点击「拍摄全板」开始
+            </div>
+          )}
+          {wells.length > 0 && !livePreview && (
+            <div className="mt-2 text-sm text-slate-400">
+              检测到 {wells.length} 孔 ·{" "}
+              <span className="text-green-400">
+                {wells.filter((w) => w.detected).length} 直接检测
+              </span>{" "}
+              ·{" "}
+              <span className="text-orange-400">
+                {wells.filter((w) => !w.detected).length} 网格补全
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* 右:单孔放大 + 控制 */}
+        <div className="space-y-4">
+          <WellDetail label={selected} />
+          <TimelapseControl jobs={status?.jobs ?? []} onChange={refreshStatus} />
+          <Settings status={status} />
+        </div>
+      </div>
+    </div>
+  );
+}

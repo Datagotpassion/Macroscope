@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# 数据
+platescope_data/
+*.jpg
+*.tiff
+!frontend/**
+
+# Node / 前端构建
+node_modules/
+frontend/dist/
+
+# 编辑器
+.vscode/
+.idea/

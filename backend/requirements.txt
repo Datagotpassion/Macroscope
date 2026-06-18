@@ -5,7 +5,9 @@
 fastapi>=0.110
 uvicorn[standard]>=0.27
 opencv-python>=4.8
-numpy>=1.24
+# numpy 必须 <2:树莓派的 picamera2/simplejpeg C 扩展是针对 numpy 1.x 编译的,
+# 装了 numpy 2.x 会报 "numpy.dtype size changed" 然后回退到 MockCamera。
+numpy>=1.24,<2
 apscheduler>=3.10
 pillow>=10.0
 pydantic>=2.0

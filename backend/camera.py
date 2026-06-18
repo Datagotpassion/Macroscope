@@ -61,21 +61,31 @@ class PiCameraBackend(_Backend):
         self._preview_cfg = self._cam.create_preview_configuration(
             main={"size": PREVIEW_SIZE, "format": "RGB888"}
         )
-        self._mode = None
-        self.configure_still()
+        self._mode: str | None = None
+        self._started = False
+        self.configure_still()  # 首次配置 + start
+
+    def _switch(self, mode: str, cfg) -> None:
+        """切换相机模式。picamera2 要求 reconfigure 前必须 stop,之后再 start。
+
+        旧实现直接在运行中的相机上 configure() 会抛异常 —— 这正是实时预览
+        切到低分辨率模式时静默挂掉的原因。
+        """
+        if self._mode == mode:
+            return
+        if self._started:
+            self._cam.stop()
+            self._started = False
+        self._cam.configure(cfg)
         self._cam.start()
+        self._started = True
+        self._mode = mode
 
     def configure_still(self) -> None:
-        if self._mode == "still":
-            return
-        self._cam.configure(self._still_cfg)
-        self._mode = "still"
+        self._switch("still", self._still_cfg)
 
     def configure_preview(self) -> None:
-        if self._mode == "preview":
-            return
-        self._cam.configure(self._preview_cfg)
-        self._mode = "preview"
+        self._switch("preview", self._preview_cfg)
 
     def capture_array(self) -> np.ndarray:
         # picamera2 返回 RGB,后续 OpenCV 处理统一用 BGR

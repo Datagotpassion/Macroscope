@@ -3,8 +3,11 @@ import { useI18n } from "./i18n.jsx";
 import { fetchLatestFrameBlob } from "./api";
 import { idbGet, idbSet } from "./idb";
 
-// File System Access API 只在安全上下文 (https / localhost) 可用。
-// 走 http://树莓派IP 时不可用,自动回退到浏览器下载 (存到「下载」目录)。
+// 保存优先级:
+//   1) Electron 原生 (window.desktop) —— 选真实文件夹,直接写盘,最可靠。
+//   2) File System Access API —— 安全上下文 (https/localhost) 才有。
+//   3) 浏览器下载 —— 走 http://树莓派IP 时的回退 (存到「下载」目录)。
+const desktop = typeof window !== "undefined" ? window.desktop : null;
 const supportsFS =
   typeof window !== "undefined" && "showDirectoryPicker" in window;
 
@@ -32,6 +35,14 @@ export default function LocalSave({ experiment, autoSave, setAutoSave, registerS
   // 刷新后恢复上次选的文件夹
   React.useEffect(() => {
     (async () => {
+      if (desktop) {
+        const p = localStorage.getItem("platescope_save_dir");
+        if (p) {
+          dirHandleRef.current = p; // Electron 下存的是路径字符串
+          setDirName(p);
+        }
+        return;
+      }
       if (!supportsFS) return;
       try {
         const h = await idbGet("saveDir");
@@ -46,6 +57,15 @@ export default function LocalSave({ experiment, autoSave, setAutoSave, registerS
   }, []);
 
   const pickFolder = async () => {
+    if (desktop) {
+      const p = await desktop.chooseFolder();
+      if (p) {
+        dirHandleRef.current = p;
+        setDirName(p);
+        localStorage.setItem("platescope_save_dir", p);
+      }
+      return;
+    }
     try {
       const h = await window.showDirectoryPicker({ mode: "readwrite" });
       dirHandleRef.current = h;
@@ -71,25 +91,40 @@ export default function LocalSave({ experiment, autoSave, setAutoSave, registerS
       return;
     }
     const name = `${experiment || "exp"}_${stamp()}.jpg`;
-    const h = dirHandleRef.current;
-    if (supportsFS && h) {
+    const target = dirHandleRef.current;
+
+    // 1) Electron 原生写盘
+    if (desktop && typeof target === "string") {
       try {
-        if (!(await ensurePerm(h))) {
+        const buf = await blob.arrayBuffer();
+        const saved = await desktop.saveImage(target, name, new Uint8Array(buf));
+        flash(t("savedTo", saved));
+      } catch (e) {
+        flash(t("saveFailed", e.message || String(e)));
+      }
+      return;
+    }
+
+    // 2) File System Access API
+    if (supportsFS && target) {
+      try {
+        if (!(await ensurePerm(target))) {
           flash(t("savePermDenied"));
           return;
         }
-        const fh = await h.getFileHandle(name, { create: true });
+        const fh = await target.getFileHandle(name, { create: true });
         const w = await fh.createWritable();
         await w.write(blob);
         await w.close();
-        flash(t("savedTo", `${h.name}/${name}`));
+        flash(t("savedTo", `${target.name}/${name}`));
         return;
       } catch (e) {
         flash(t("saveFailed", e.message));
         return;
       }
     }
-    // 下载回退
+
+    // 3) 下载回退
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -110,7 +145,7 @@ export default function LocalSave({ experiment, autoSave, setAutoSave, registerS
     <div className="space-y-3 rounded-lg border border-slate-700 p-4">
       <h3 className="text-lg font-semibold">{t("localSaveTitle")}</h3>
 
-      {supportsFS ? (
+      {desktop || supportsFS ? (
         <div className="flex items-center gap-2 text-sm">
           <button
             onClick={pickFolder}

@@ -35,6 +35,10 @@ const translations = {
     msgStopped: (exp) => `已停止: ${exp}`,
 
     systemStatus: "系统状态",
+    connection: "连接",
+    connected: "已连接",
+    disconnected: "未连接",
+    connect: "连接",
     camera: "相机",
     cameraMock: "MockCamera (开发模式)",
     cameraReal: "picamera2 (硬件)",
@@ -97,6 +101,10 @@ const translations = {
     msgStopped: (exp) => `Stopped: ${exp}`,
 
     systemStatus: "System Status",
+    connection: "Connection",
+    connected: "Connected",
+    disconnected: "Disconnected",
+    connect: "Connect",
     camera: "Camera",
     cameraMock: "MockCamera (dev mode)",
     cameraReal: "picamera2 (hardware)",

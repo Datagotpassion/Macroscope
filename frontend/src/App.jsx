@@ -238,7 +238,7 @@ export default function App() {
             experiment={experiment}
             setExperiment={setExperiment}
           />
-          <Settings status={status} />
+          <Settings status={status} onReconnect={refreshStatus} />
         </div>
       </div>
     </div>

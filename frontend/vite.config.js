@@ -5,6 +5,9 @@ import react from "@vitejs/plugin-react";
 // 这样前端 dev server (5173) 不用关心跨域。
 export default defineConfig({
   plugins: [react()],
+  // 相对路径,这样打包后的页面既能被 Pi 在 "/" 下托管,
+  // 也能在 Electron 里用 file:// 直接加载。
+  base: "./",
   server: {
     proxy: {
       "/api": "http://localhost:8000",

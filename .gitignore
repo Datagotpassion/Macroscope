@@ -15,6 +15,9 @@ platescope_data/
 node_modules/
 frontend/dist/
 
+# Electron 桌面 App 构建产物
+desktop/release/
+
 # 编辑器
 .vscode/
 .idea/

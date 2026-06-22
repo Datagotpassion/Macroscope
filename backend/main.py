@@ -109,9 +109,20 @@ async def get_well_image(label: str):
     return Response(content=_encode_jpeg(crop), media_type="image/jpeg")
 
 
+@app.get("/api/frame/latest")
+async def get_latest_frame():
+    """返回最近一次拍摄缓存的原始帧 (全质量, 不重新拍摄)。
+
+    供前端保存到用户的 PC —— 保存的正是刚分析过的那一帧。
+    """
+    if store.latest_frame is None:
+        raise HTTPException(404, "没有缓存帧,请先 /api/capture")
+    return Response(content=_encode_jpeg(store.latest_frame, 95), media_type="image/jpeg")
+
+
 @app.post("/api/save")
 async def save_frame(experiment: str):
-    """用户确认保存当前缓存帧到磁盘。"""
+    """用户确认保存当前缓存帧到磁盘 (Pi 端)。"""
     path = store.save_frame(experiment)
     if not path:
         raise HTTPException(400, "没有可保存的帧,请先 /api/capture")

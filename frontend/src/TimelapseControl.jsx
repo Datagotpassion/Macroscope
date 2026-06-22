@@ -3,9 +3,8 @@ import { startTimelapse, stopTimelapse, saveFrame } from "./api";
 import { useI18n } from "./i18n.jsx";
 
 // 定时拍摄控制面板 (F5) + 手动保存 (F6)。
-export default function TimelapseControl({ jobs, onChange }) {
+export default function TimelapseControl({ jobs, onChange, experiment, setExperiment }) {
   const { t } = useI18n();
-  const [experiment, setExperiment] = React.useState("exp1");
   const [interval, setIntervalMin] = React.useState(30);
   const [msg, setMsg] = React.useState("");
 

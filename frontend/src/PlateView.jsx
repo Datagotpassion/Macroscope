@@ -1,21 +1,23 @@
 import React from "react";
 
-// 全板网格视图 (F3, F4, F8)。把后端返回的 96 个孔按相对坐标叠加成可点击网格。
-// 标记用真实像素定位/尺寸 (而不是 % + aspect-ratio),并保证最小点击区域,
-// 否则孔很小时按钮高度可能塌成 0,导致点不中。
-export default function PlateView({ wells, imageUrl, onSelect, selected }) {
+// 全板网格视图 (F3, F4, F8)。showMask 控制孔位遮罩 + 板边框的显示/隐藏。
+// 标记用真实像素定位/尺寸,保证最小点击区域 (否则孔很小时按钮高度可能塌成 0)。
+export default function PlateView({ wells, imageUrl, onSelect, selected, showMask }) {
   const imgRef = React.useRef(null);
-  // box: 图像在页面上的渲染尺寸 (px) + 自然分辨率 (px)
   const [box, setBox] = React.useState({ w: 0, natW: 4056, natH: 3040 });
 
   const measure = React.useCallback(() => {
     const el = imgRef.current;
     if (!el) return;
-    setBox({
-      w: el.clientWidth,
-      natW: el.naturalWidth || 4056,
-      natH: el.naturalHeight || 3040,
-    });
+    const w = el.clientWidth;
+    const natW = el.naturalWidth || 4056;
+    const natH = el.naturalHeight || 3040;
+    // 值没变就返回旧对象,避免无意义的重渲染
+    setBox((prev) =>
+      prev.w === w && prev.natW === natW && prev.natH === natH
+        ? prev
+        : { w, natW, natH }
+    );
   }, []);
 
   React.useEffect(() => {
@@ -24,8 +26,20 @@ export default function PlateView({ wells, imageUrl, onSelect, selected }) {
     return () => window.removeEventListener("resize", measure);
   }, [measure]);
 
-  // 渲染像素 / 自然像素 的缩放比
   const scale = box.w && box.natW ? box.w / box.natW : 0;
+
+  // 板边框 (由所有孔的范围 + padding 推算)
+  let boundary = null;
+  if (showMask && scale > 0 && wells.length) {
+    const xs = wells.map((w) => w.cx);
+    const ys = wells.map((w) => w.cy);
+    const pad = Math.max(...wells.map((w) => w.r)) * 1.5;
+    const x1 = (Math.min(...xs) - pad) * scale;
+    const y1 = (Math.min(...ys) - pad) * scale;
+    const x2 = (Math.max(...xs) + pad) * scale;
+    const y2 = (Math.max(...ys) + pad) * scale;
+    boundary = { left: x1, top: y1, width: x2 - x1, height: y2 - y1 };
+  }
 
   return (
     <div className="relative inline-block">
@@ -36,7 +50,14 @@ export default function PlateView({ wells, imageUrl, onSelect, selected }) {
         onLoad={measure}
         className="block w-full max-w-4xl rounded-lg border border-slate-700"
       />
-      {scale > 0 &&
+      {boundary && (
+        <div
+          className="pointer-events-none absolute rounded-md border-2 border-cyan-400/70 bg-cyan-400/5"
+          style={boundary}
+        />
+      )}
+      {showMask &&
+        scale > 0 &&
         wells.map((w) => {
           const d = Math.max(16, w.r * 2 * scale); // 最小 16px 点击区域
           const isSel = selected === w.label;

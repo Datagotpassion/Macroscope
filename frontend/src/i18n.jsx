@@ -42,6 +42,20 @@ const translations = {
     runningJobsCount: "运行任务数",
     phase2Note: "LED 亮度控制 (F14)、温湿度监控 (F18) 将在 Phase 2 接入。",
 
+    mask: "孔位遮罩",
+    localSaveTitle: "保存到本机 (PC)",
+    chooseFolder: "选择文件夹",
+    noFolderChosen: "未选择文件夹 (将用下载)",
+    folderLabel: (name) => `文件夹: ${name}`,
+    downloadModeNote: "当前以下载方式保存到本机「下载」目录 (浏览器不支持选目录)。",
+    saveToPC: "保存当前帧到本机",
+    autoSavePC: "拍摄后自动保存到本机",
+    saveNoFrame: "没有可保存的帧,请先拍摄",
+    savePermDenied: "未获得文件夹写入权限",
+    savedTo: (p) => `已保存到: ${p}`,
+    savedDownload: (n) => `已下载: ${n}`,
+    saveFailed: (e) => `保存失败: ${e}`,
+
     switchTo: "English",
   },
   en: {
@@ -83,6 +97,21 @@ const translations = {
     runningJobsCount: "Running jobs",
     phase2Note:
       "LED brightness (F14) and temp/humidity monitoring (F18) coming in Phase 2.",
+
+    mask: "Plate Mask",
+    localSaveTitle: "Save to This PC",
+    chooseFolder: "Choose Folder",
+    noFolderChosen: "No folder chosen (will download)",
+    folderLabel: (name) => `Folder: ${name}`,
+    downloadModeNote:
+      "Saving via browser download to your Downloads folder (this browser can't pick a folder over http).",
+    saveToPC: "Save Frame to PC",
+    autoSavePC: "Auto-save captures to PC",
+    saveNoFrame: "No frame to save — capture first",
+    savePermDenied: "Folder write permission denied",
+    savedTo: (p) => `Saved to: ${p}`,
+    savedDownload: (n) => `Downloaded: ${n}`,
+    saveFailed: (e) => `Save failed: ${e}`,
 
     switchTo: "中文",
   },

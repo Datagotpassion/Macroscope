@@ -50,6 +50,15 @@ export async function listFrames(name) {
   return r.json();
 }
 
+// 最近一帧的原始图 (用于保存到 PC,不重新拍摄)
+export const frameLatestUrl = () => `/api/frame/latest?t=${Date.now()}`;
+
+export async function fetchLatestFrameBlob() {
+  const r = await fetch(frameLatestUrl());
+  if (!r.ok) throw new Error("no buffered frame");
+  return r.blob();
+}
+
 // 图像 URL (带 cache-buster)
 export const plateImageUrl = (annotate = false) =>
   `/api/plate/image?annotate=${annotate}&t=${Date.now()}`;

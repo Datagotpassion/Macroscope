@@ -1,15 +1,12 @@
 import React from "react";
 import PlateView from "./PlateView";
+import PreviewMask from "./PreviewMask";
 import WellDetail from "./WellDetail";
 import TimelapseControl from "./TimelapseControl";
+import LocalSave from "./LocalSave";
 import Settings from "./Settings";
 import { useI18n } from "./i18n.jsx";
-import {
-  capture,
-  getStatus,
-  openPreview,
-  plateImageUrl,
-} from "./api";
+import { capture, getStatus, openPreview, plateImageUrl } from "./api";
 
 export default function App() {
   const { t, toggle } = useI18n();
@@ -20,6 +17,16 @@ export default function App() {
   const [previewUrl, setPreviewUrl] = React.useState(null);
   const [livePreview, setLivePreview] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
+
+  const [experiment, setExperiment] = React.useState("exp1");
+  const [showMask, setShowMask] = React.useState(true);
+  const [autoSave, setAutoSave] = React.useState(false);
+
+  // LocalSave 把它的 saveNow 交给这里,拍摄后可自动保存
+  const saverRef = React.useRef(null);
+  const registerSaver = React.useCallback((fn) => {
+    saverRef.current = fn;
+  }, []);
 
   const refreshStatus = React.useCallback(async () => {
     try {
@@ -35,12 +42,15 @@ export default function App() {
     return () => clearInterval(timer);
   }, [refreshStatus]);
 
-  // 拍照 + 检测孔位 (F1, F3)
+  // 拍照 + 检测孔位 (F1, F3)，可选自动保存到 PC (F6)
   const doCapture = async () => {
     setBusy(true);
     try {
       const data = await capture();
       setWells(data.wells);
+      if (autoSave && saverRef.current) {
+        await saverRef.current(); // 保存的是刚分析过的这一帧
+      }
       setPlateUrl(plateImageUrl(true)); // 带标注的全板图
     } finally {
       setBusy(false);
@@ -85,6 +95,14 @@ export default function App() {
             {livePreview ? t("stopPreview") : t("livePreview")}
           </button>
           <button
+            onClick={() => setShowMask((v) => !v)}
+            className={`rounded px-4 py-2 font-medium ${
+              showMask ? "bg-cyan-700 hover:bg-cyan-600" : "bg-slate-700 hover:bg-slate-600"
+            }`}
+          >
+            {t("mask")}
+          </button>
+          <button
             onClick={toggle}
             title="Language / 语言"
             className="rounded border border-slate-600 px-3 py-2 text-sm font-medium hover:bg-slate-700"
@@ -101,11 +119,14 @@ export default function App() {
             <div className="space-y-2">
               <div className="text-sm text-slate-400">{t("previewHeader")}</div>
               {previewUrl ? (
-                <img
-                  src={previewUrl}
-                  alt="live"
-                  className="w-full rounded-lg border border-slate-700"
-                />
+                <div className="relative inline-block">
+                  <img
+                    src={previewUrl}
+                    alt="live"
+                    className="block w-full rounded-lg border border-slate-700"
+                  />
+                  <PreviewMask wells={wells} show={showMask} />
+                </div>
               ) : (
                 <div className="flex h-96 items-center justify-center rounded-lg border border-slate-700 text-slate-500">
                   {t("connecting")}
@@ -118,6 +139,7 @@ export default function App() {
               imageUrl={plateUrl}
               selected={selected}
               onSelect={setSelected}
+              showMask={showMask}
             />
           ) : (
             <div className="flex h-96 items-center justify-center rounded-lg border border-dashed border-slate-700 text-slate-500">
@@ -141,7 +163,18 @@ export default function App() {
         {/* 右:单孔放大 + 控制 */}
         <div className="space-y-4">
           <WellDetail label={selected} />
-          <TimelapseControl jobs={status?.jobs ?? []} onChange={refreshStatus} />
+          <LocalSave
+            experiment={experiment}
+            autoSave={autoSave}
+            setAutoSave={setAutoSave}
+            registerSaver={registerSaver}
+          />
+          <TimelapseControl
+            jobs={status?.jobs ?? []}
+            onChange={refreshStatus}
+            experiment={experiment}
+            setExperiment={setExperiment}
+          />
           <Settings status={status} />
         </div>
       </div>

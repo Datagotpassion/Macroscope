@@ -142,6 +142,27 @@ async def get_latest_frame():
     return Response(content=_encode_jpeg(store.latest_frame, 95), media_type="image/jpeg")
 
 
+@app.get("/api/crop")
+async def crop_region(cx: float, cy: float, r: float):
+    """按归一化坐标裁剪缓存帧 (供手动网格的单孔放大)。
+
+    cx, cy 是相对整图宽/高的比例 (0..1);r 是相对宽度的比例。
+    """
+    image = store.latest_frame
+    if image is None:
+        raise HTTPException(404, "没有缓存帧,请先拍摄")
+    h, w = image.shape[:2]
+    px, py = int(cx * w), int(cy * h)
+    pr = max(1, int(r * w))
+    x1, y1 = max(0, px - pr), max(0, py - pr)
+    x2, y2 = min(w, px + pr), min(h, py + pr)
+    if x2 <= x1 or y2 <= y1:
+        raise HTTPException(400, "裁剪区域为空")
+    crop = image[y1:y2, x1:x2]
+    jpeg = await asyncio.to_thread(_encode_jpeg, crop)
+    return Response(content=jpeg, media_type="image/jpeg")
+
+
 @app.post("/api/save")
 async def save_frame(experiment: str):
     """用户确认保存当前缓存帧到磁盘 (Pi 端)。"""

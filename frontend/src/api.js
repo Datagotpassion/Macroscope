@@ -64,6 +64,10 @@ export const plateImageUrl = (annotate = false) =>
   `/api/plate/image?annotate=${annotate}&t=${Date.now()}`;
 export const wellImageUrl = (label) =>
   `/api/well/${encodeURIComponent(label)}/image?t=${Date.now()}`;
+
+// 按归一化坐标裁剪 (手动网格的单孔放大)。r 放大一点带点余量。
+export const cropUrl = (cx, cy, r) =>
+  `/api/crop?cx=${cx.toFixed(5)}&cy=${cy.toFixed(5)}&r=${(r * 1.3).toFixed(5)}&t=${Date.now()}`;
 export const frameUrl = (exp, frame) =>
   `/api/experiments/${encodeURIComponent(exp)}/frames/${encodeURIComponent(frame)}`;
 

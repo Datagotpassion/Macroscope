@@ -29,6 +29,26 @@ different address, change it in **Settings → Connection** (or set the
 
 `npm run start:fast` skips rebuilding the frontend (use after the first build).
 
+The launcher (`launch.cjs`) clears `ELECTRON_RUN_AS_NODE` before starting Electron —
+VS Code / Electron-based terminals set it to `1`, which would otherwise make
+Electron run as plain Node and crash the main process (`ipcMain undefined`).
+
+## Troubleshooting the install
+
+- **Electron binary download fails / "Electron failed to install correctly"**:
+  `.npmrc` points the download at the npmmirror (Taobao) mirror, which fixes the
+  common case of GitHub release downloads being blocked/slow. If `npm install`
+  still leaves it broken, clear the cache and reinstall:
+  ```powershell
+  Remove-Item -Recurse -Force "$env:LOCALAPPDATA\electron\Cache"
+  npm install
+  ```
+- **Last-resort manual extract** (if the zip downloads but never unpacks): the
+  cached `electron-v<ver>-win32-x64.zip` lives under
+  `%LOCALAPPDATA%\electron\Cache\...`; extract it into
+  `node_modules\electron\dist\` and write `electron.exe` into
+  `node_modules\electron\path.txt`.
+
 ## Build a Windows installer
 
 ```bash

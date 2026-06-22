@@ -1,13 +1,12 @@
 import React from "react";
 import GridMask from "./GridMask";
-import PreviewMask from "./PreviewMask";
 import WellDetail from "./WellDetail";
 import TimelapseControl from "./TimelapseControl";
 import LocalSave from "./LocalSave";
 import Settings from "./Settings";
 import { useI18n } from "./i18n.jsx";
 import { capture, getStatus, openPreview, plateImageUrl } from "./api";
-import { gridWells, loadGrid, saveGrid, gridFromWells } from "./grid";
+import { loadGrid, saveGrid, gridFromWells } from "./grid";
 
 export default function App() {
   const { t, toggle } = useI18n();
@@ -29,7 +28,6 @@ export default function App() {
   React.useEffect(() => {
     saveGrid(grid);
   }, [grid]);
-  const previewWells = React.useMemo(() => gridWells(grid), [grid]);
 
   // LocalSave 把它的 saveNow 交给这里,拍摄后可自动保存
   const saverRef = React.useRef(null);
@@ -175,13 +173,20 @@ export default function App() {
             <div className="space-y-2">
               <div className="text-sm text-slate-400">{t("previewHeader")}</div>
               {previewUrl ? (
-                <div className="relative inline-block">
+                <div className="relative">
                   <img
                     src={previewUrl}
                     alt="live"
                     className="block w-full rounded-lg border border-slate-700"
                   />
-                  <PreviewMask wells={previewWells} show={showMask} />
+                  <GridMask
+                    grid={grid}
+                    setGrid={setGrid}
+                    edit={editGrid}
+                    show={showMask}
+                    onSelectWell={setSelectedWell}
+                    selected={selectedWell?.label}
+                  />
                 </div>
               ) : (
                 <div className="flex h-96 items-center justify-center rounded-lg border border-slate-700 text-slate-500">
@@ -190,15 +195,21 @@ export default function App() {
               )}
             </div>
           ) : plateUrl ? (
-            <GridMask
-              imageUrl={plateUrl}
-              grid={grid}
-              setGrid={setGrid}
-              edit={editGrid}
-              show={showMask}
-              onSelectWell={setSelectedWell}
-              selected={selectedWell?.label}
-            />
+            <div className="relative">
+              <img
+                src={plateUrl}
+                alt="plate"
+                className="block w-full rounded-lg border border-slate-700"
+              />
+              <GridMask
+                grid={grid}
+                setGrid={setGrid}
+                edit={editGrid}
+                show={showMask}
+                onSelectWell={setSelectedWell}
+                selected={selectedWell?.label}
+              />
+            </div>
           ) : (
             <div className="flex h-96 items-center justify-center rounded-lg border border-dashed border-slate-700 text-slate-500">
               {t("captureHint")}

@@ -63,10 +63,15 @@ async def status():
 
 @app.get("/api/capture")
 async def capture_now():
-    """手动触发拍照 — 只缓存到内存/tmp,不写正式目录。"""
-    image = camera.capture_array()
-    wells = detector.detect_wells(image)
+    """手动触发拍照 — 只缓存到内存/tmp,不写正式目录。
+
+    拍照和孔位检测都很重 (全分辨率 + HoughCircles),必须放到线程里跑,
+    否则会阻塞事件循环,让整个服务器 (包括本请求的响应) 卡死。
+    """
+    image = await asyncio.to_thread(camera.capture_array)
+    wells = await asyncio.to_thread(detector.detect_wells, image)
     store.buffer_frame(image, meta={"wells": len(wells)})
+    store.latest_wells = wells  # 缓存检测结果,标注时直接复用,不重复检测
     return {
         "wells": wells,
         "total": len(wells),
@@ -77,21 +82,32 @@ async def capture_now():
 @app.get("/api/wells")
 async def get_wells():
     """获取当前帧的所有孔位 (基于一次新拍摄)。"""
-    image = camera.capture_array()
+    image = await asyncio.to_thread(camera.capture_array)
     store.buffer_frame(image, meta={})
-    wells = detector.detect_wells(image)
+    wells = await asyncio.to_thread(detector.detect_wells, image)
     return {"wells": wells, "total": len(wells)}
 
 
 @app.get("/api/plate/image")
-async def get_plate_image(annotate: bool = False):
-    """获取当前全板图像 (不写正式目录)。annotate=True 叠加孔位标注。"""
-    image = camera.capture_array()
-    store.buffer_frame(image, meta={})
+async def get_plate_image(annotate: bool = False, fresh: bool = False):
+    """获取当前全板图像。
+
+    默认复用最近一次 /api/capture 缓存的帧 (不重新拍摄),这样点一次「拍摄」
+    只拍一张,而且显示的就是刚分析过的那一帧。fresh=True 时强制重新拍摄。
+    """
+    if fresh or store.latest_frame is None:
+        image = await asyncio.to_thread(camera.capture_array)
+        store.buffer_frame(image, meta={})
+    else:
+        image = store.latest_frame
     if annotate:
-        wells = detector.detect_wells(image)
-        image = detector.annotate(image, wells)
-    return Response(content=_encode_jpeg(image), media_type="image/jpeg")
+        # 复用 /api/capture 已检测好的孔位,避免对同一帧重复跑 HoughCircles
+        wells = store.latest_wells
+        if wells is None:
+            wells = await asyncio.to_thread(detector.detect_wells, image)
+        image = await asyncio.to_thread(detector.annotate, image, wells)
+    jpeg = await asyncio.to_thread(_encode_jpeg, image)
+    return Response(content=jpeg, media_type="image/jpeg")
 
 
 @app.get("/api/well/{label}/image")
@@ -99,14 +115,15 @@ async def get_well_image(label: str):
     """获取指定孔的裁剪放大图。优先用缓存帧,避免重复拍摄。"""
     image = store.latest_frame
     if image is None:
-        image = camera.capture_array()
+        image = await asyncio.to_thread(camera.capture_array)
         store.buffer_frame(image, meta={})
-    wells = detector.detect_wells(image)
+    wells = await asyncio.to_thread(detector.detect_wells, image)
     well = next((w for w in wells if w["label"] == label.upper()), None)
     if not well:
         raise HTTPException(404, f"Well {label} not found")
     crop = detector.crop_well(image, well)
-    return Response(content=_encode_jpeg(crop), media_type="image/jpeg")
+    jpeg = await asyncio.to_thread(_encode_jpeg, crop)
+    return Response(content=jpeg, media_type="image/jpeg")
 
 
 @app.get("/api/frame/latest")

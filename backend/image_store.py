@@ -25,6 +25,7 @@ class ImageStore:
         self.base_dir = Path(base_dir) if base_dir else BASE_DIR
         self.latest_frame: np.ndarray | None = None
         self.latest_meta: dict = {}
+        self.latest_wells: list[dict] | None = None  # 与 latest_frame 对应的检测结果
         self.latest_path = str(_TMP_LATEST)
 
     # ── 缓冲 (不写正式目录) ──
@@ -33,6 +34,7 @@ class ImageStore:
         """每次拍照只缓存到内存 + /tmp,等用户确认。"""
         self.latest_frame = image
         self.latest_meta = meta or {}
+        self.latest_wells = None  # 新帧:旧的检测结果失效
         cv2.imwrite(self.latest_path, image)
 
     # ── 确认保存 (写盘) ──

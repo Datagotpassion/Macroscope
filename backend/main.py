@@ -7,6 +7,7 @@ Pi 是服务器,浏览器只是显示端。提供 REST API + WebSocket 预览,
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -68,10 +69,14 @@ async def capture_now():
     拍照和孔位检测都很重 (全分辨率 + HoughCircles),必须放到线程里跑,
     否则会阻塞事件循环,让整个服务器 (包括本请求的响应) 卡死。
     """
+    t0 = time.perf_counter()
     image = await asyncio.to_thread(camera.capture_array)
+    t1 = time.perf_counter()
     wells = await asyncio.to_thread(detector.detect_wells, image)
+    t2 = time.perf_counter()
     store.buffer_frame(image, meta={"wells": len(wells)})
     store.latest_wells = wells  # 缓存检测结果,标注时直接复用,不重复检测
+    _log(f"[capture] grab={t1 - t0:.2f}s detect={t2 - t1:.2f}s wells={len(wells)}")
     return {
         "wells": wells,
         "total": len(wells),

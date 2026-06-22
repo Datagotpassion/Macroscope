@@ -27,22 +27,48 @@ class PlateDetector:
     PITCH = 9.0    # mm 孔间距
     WELL_D = 6.4   # mm 孔径
 
+    # 检测用的工作分辨率宽度。HoughCircles 在 12MP 全图上要几十秒,
+    # 而孔是大特征,缩小到约 1200px 检测再把坐标放大回去,快几十倍且精度足够。
+    DETECT_WIDTH = 1200
+
     def detect_wells(self, image: np.ndarray) -> list[dict]:
-        """输入全板 BGR 图像,输出 96 个孔。
+        """输入全板 BGR 图像,输出 96 个孔 (坐标在原图分辨率下)。
 
         返回: [{"label": "A1", "cx", "cy", "r", "detected": bool}, ...]
         `detected=True` 表示该孔由 Hough 直接检测到,False 表示由网格几何推算补全。
         """
-        circles = self._hough_circles(image)
-        h, w = image.shape[:2]
+        H, W = image.shape[:2]
 
+        # 下采样到工作分辨率再检测
+        if W > self.DETECT_WIDTH:
+            scale = self.DETECT_WIDTH / W
+            small = cv2.resize(
+                image,
+                (self.DETECT_WIDTH, max(1, int(round(H * scale)))),
+                interpolation=cv2.INTER_AREA,
+            )
+        else:
+            scale = 1.0
+            small = image
+
+        sh, sw = small.shape[:2]
+        circles = self._hough_circles(small)
+
+        wells = None
         if len(circles) >= 4:
-            grid = self._fit_grid(circles, image_shape=(h, w))
-            if grid is not None:
-                return grid
+            wells = self._fit_grid(circles, image_shape=(sh, sw))
+        if wells is None:
+            # 兜底:完全基于图像尺寸的理想网格 (Hough 全失败时仍返回 96 孔)
+            wells = self._ideal_grid(sw, sh)
 
-        # 兜底:完全基于图像尺寸的理想网格 (Hough 全失败时仍返回 96 孔)
-        return self._ideal_grid(w, h)
+        # 把检测坐标从工作分辨率映射回原图分辨率
+        if scale != 1.0:
+            inv = 1.0 / scale
+            for wd in wells:
+                wd["cx"] = int(round(wd["cx"] * inv))
+                wd["cy"] = int(round(wd["cy"] * inv))
+                wd["r"] = int(round(wd["r"] * inv))
+        return wells
 
     # ── Hough 圆检测 ──
 

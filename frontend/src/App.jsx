@@ -6,7 +6,7 @@ import LocalSave from "./LocalSave";
 import Settings from "./Settings";
 import { useI18n } from "./i18n.jsx";
 import { capture, getStatus, openPreview, plateImageUrl } from "./api";
-import { loadGrid, saveGrid, gridFromWells } from "./grid";
+import { loadGrid, saveGrid, gridFromWells, DEFAULT_GRID } from "./grid";
 
 export default function App() {
   const { t, toggle } = useI18n();
@@ -151,6 +151,12 @@ export default function App() {
             className="rounded bg-slate-700 px-3 py-1 hover:bg-slate-600"
           >
             {t("autoFit")}
+          </button>
+          <button
+            onClick={() => setGrid(DEFAULT_GRID)}
+            className="rounded bg-slate-700 px-3 py-1 hover:bg-slate-600"
+          >
+            {t("resetGrid")}
           </button>
           <label className="flex items-center gap-2">
             {t("wellSize")}

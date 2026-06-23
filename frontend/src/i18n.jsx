@@ -20,6 +20,8 @@ const translations = {
     wellDetailHint: "点击左侧任意孔位查看放大图",
     wellTitle: (label) => `孔位 ${label}`,
     refresh: "刷新",
+    zoomLive: "实时",
+    zoomStatic: "静帧",
 
     timelapseTitle: "实验 & 定时拍摄",
     experimentPlaceholder: "实验名",
@@ -85,6 +87,8 @@ const translations = {
     wellDetailHint: "Click any well on the left to view a zoomed image",
     wellTitle: (label) => `Well ${label}`,
     refresh: "Refresh",
+    zoomLive: "Live",
+    zoomStatic: "Still",
 
     timelapseTitle: "Experiment & Timelapse",
     experimentPlaceholder: "Experiment name",

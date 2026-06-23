@@ -225,7 +225,11 @@ export default function App() {
 
         {/* 右:单孔放大 + 控制 */}
         <div className="space-y-4">
-          <WellDetail well={selectedWell} />
+          <WellDetail
+            well={selectedWell}
+            livePreview={livePreview}
+            previewUrl={previewUrl}
+          />
           <LocalSave
             experiment={experiment}
             autoSave={autoSave}

@@ -246,7 +246,16 @@ async def preview(ws: WebSocket):
             next_frame = asyncio.create_task(
                 asyncio.to_thread(camera.capture_array, True)
             )
-            jpeg = await asyncio.to_thread(_encode_jpeg, frame, PREVIEW_QUALITY)
+            # 单帧抓取/编码失败 (例如刚切 ROI 的瞬间) 不应弄断整条流:跳过这帧
+            if frame is None or getattr(frame, "size", 0) == 0:
+                await asyncio.sleep(0.05)
+                continue
+            try:
+                jpeg = await asyncio.to_thread(_encode_jpeg, frame, PREVIEW_QUALITY)
+            except Exception as exc:  # noqa: BLE001
+                _log(f"[preview] 跳过一帧: {exc!r}")
+                await asyncio.sleep(0.05)
+                continue
             await ws.send_bytes(jpeg)
             # 只睡剩余时间;若处理已超过一帧预算就不睡
             await asyncio.sleep(max(0.0, interval - (loop.time() - t0)))

@@ -98,23 +98,36 @@ class PiCameraBackend(_Backend):
         rgb = self._cam.capture_array()
         return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
+    def _max_crop(self) -> tuple[int, int, int, int]:
+        """有效裁剪范围 (x_off, y_off, w, h);用 ScalerCropMaximum,回退到全阵列。"""
+        mc = self._cam.camera_properties.get("ScalerCropMaximum")
+        if mc and len(mc) == 4 and mc[2] > 0 and mc[3] > 0:
+            return tuple(int(v) for v in mc)
+        return (0, 0, int(self._full[0]), int(self._full[1]))
+
     def set_roi(self, cx: float, cy: float, r: float) -> None:
         """硬件数字变焦:让 ISP 只读出该孔区域并放大到输出尺寸。
 
-        ScalerCrop 用全传感器像素坐标。裁剪框保持输出宽高比避免拉伸。
+        ScalerCrop 用传感器像素坐标 (相对 ScalerCropMaximum,含偏移)。
+        裁剪框保持输出宽高比避免拉伸,并夹在有效范围内。出错不能弄崩预览流。
         """
-        fw, fh = self._full
-        aspect = PREVIEW_SIZE[1] / PREVIEW_SIZE[0]
-        pad = 1.6
-        w = int(min(fw, max(1, r * fw * pad * 2)))
-        h = int(min(fh, max(1, w * aspect)))
-        x = int(min(max(0, cx * fw - w / 2), fw - w))
-        y = int(min(max(0, cy * fh - h / 2), fh - h))
-        self._cam.set_controls({"ScalerCrop": (x, y, w, h)})
+        try:
+            mx, my, mw, mh = self._max_crop()
+            aspect = PREVIEW_SIZE[1] / PREVIEW_SIZE[0]
+            w = int(max(64, min(mw, r * mw * 1.6 * 2)))
+            h = int(max(64, min(mh, w * aspect)))
+            x = int(mx + min(max(0, cx * mw - w / 2), mw - w))
+            y = int(my + min(max(0, cy * mh - h / 2), mh - h))
+            _log(f"[roi] set ScalerCrop=({x},{y},{w},{h}) within max=({mx},{my},{mw},{mh})")
+            self._cam.set_controls({"ScalerCrop": (x, y, w, h)})
+        except Exception as e:  # noqa: BLE001
+            _log(f"[roi] set failed: {e!r}")
 
     def clear_roi(self) -> None:
-        fw, fh = self._full
-        self._cam.set_controls({"ScalerCrop": (0, 0, fw, fh)})
+        try:
+            self._cam.set_controls({"ScalerCrop": self._max_crop()})
+        except Exception as e:  # noqa: BLE001
+            _log(f"[roi] clear failed: {e!r}")
 
     def close(self) -> None:
         try:

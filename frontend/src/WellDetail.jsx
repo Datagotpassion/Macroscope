@@ -82,7 +82,7 @@ export default function WellDetail({
           </span>
         </h3>
         <div className="flex gap-2">
-          {livePreview && !inspecting && (
+          {!inspecting && (
             <button
               onClick={() => onInspect(well)}
               className="rounded bg-cyan-700 px-3 py-1 text-sm hover:bg-cyan-600"

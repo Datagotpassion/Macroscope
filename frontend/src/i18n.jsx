@@ -24,6 +24,8 @@ const translations = {
     zoomStatic: "静帧",
     inspectSharp: "高清检视",
     backToPlate: "← 返回全板",
+    snapMode: "全分辨率静帧 · 每 ~2-3 秒刷新",
+    refreshingSnap: "刷新中…",
 
     timelapseTitle: "实验 & 定时拍摄",
     experimentPlaceholder: "实验名",
@@ -93,6 +95,8 @@ const translations = {
     zoomStatic: "Still",
     inspectSharp: "Inspect (sharp)",
     backToPlate: "← Back to plate",
+    snapMode: "Full-resolution snapshot · refreshes every ~2-3s",
+    refreshingSnap: "Refreshing…",
 
     timelapseTitle: "Experiment & Timelapse",
     experimentPlaceholder: "Experiment name",

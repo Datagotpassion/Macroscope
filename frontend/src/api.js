@@ -67,6 +67,10 @@ export async function stopTimelapse(experiment) {
   return r.json();
 }
 
+// 全分辨率单孔静帧 (分支 B:轮询刷新,最高清晰度)
+export const wellSnapshotUrl = (cx, cy, r) =>
+  u(`/api/well/snapshot?cx=${cx.toFixed(5)}&cy=${cy.toFixed(5)}&r=${r.toFixed(5)}&t=${Date.now()}`);
+
 // 实时预览硬件数字变焦 (单孔高清检视)
 export async function setPreviewRoi(cx, cy, r) {
   await fetch(

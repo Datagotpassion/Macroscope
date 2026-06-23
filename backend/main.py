@@ -163,6 +163,22 @@ async def crop_region(cx: float, cy: float, r: float):
     return Response(content=jpeg, media_type="image/jpeg")
 
 
+@app.get("/api/well/snapshot")
+async def well_snapshot(cx: float, cy: float, r: float):
+    """拍一张全分辨率静帧并裁剪该孔 (分支 B:最高清晰度,较慢 ~1-2s/张)。"""
+    image = await asyncio.to_thread(camera.capture_array)  # 全分辨率静帧
+    h, w = image.shape[:2]
+    px, py = int(cx * w), int(cy * h)
+    pr = max(1, int(r * 1.3 * w))
+    x1, y1 = max(0, px - pr), max(0, py - pr)
+    x2, y2 = min(w, px + pr), min(h, py + pr)
+    if x2 <= x1 or y2 <= y1:
+        raise HTTPException(400, "裁剪区域为空")
+    crop = image[y1:y2, x1:x2]
+    jpeg = await asyncio.to_thread(_encode_jpeg, crop, 92)
+    return Response(content=jpeg, media_type="image/jpeg")
+
+
 @app.post("/api/preview/roi")
 async def set_preview_roi(cx: float, cy: float, r: float):
     """硬件数字变焦:让实时预览只读出该孔区域并放大 (单孔高清检视)。"""

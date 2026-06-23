@@ -5,13 +5,20 @@ import { useI18n } from "./i18n.jsx";
 // 单孔放大 (F4)。well = {label, x, y, r} 来自手动网格 (归一化坐标)。
 // - 实时预览中:从每帧预览图里裁出该孔区域,放大画到 canvas → 实时缩放预览。
 // - 看静帧时:用 /api/crop 取全分辨率清晰裁剪图。
-export default function WellDetail({ well, livePreview, previewUrl }) {
+export default function WellDetail({
+  well,
+  livePreview,
+  previewUrl,
+  inspecting,
+  onInspect,
+}) {
   const { t } = useI18n();
   const canvasRef = React.useRef(null);
   const imgRef = React.useRef(null);
   const [staticUrl, setStaticUrl] = React.useState(null);
 
-  const live = !!(livePreview && previewUrl);
+  // 检视模式下,预览流本身已是该孔 (主视图显示),这里不再客户端裁剪
+  const live = !!(livePreview && previewUrl && !inspecting);
 
   // 静态高清裁剪
   const refresh = React.useCallback(() => {
@@ -74,14 +81,24 @@ export default function WellDetail({ well, livePreview, previewUrl }) {
             {live ? t("zoomLive") : t("zoomStatic")}
           </span>
         </h3>
-        {!live && (
-          <button
-            onClick={refresh}
-            className="rounded bg-slate-700 px-3 py-1 text-sm hover:bg-slate-600"
-          >
-            {t("refresh")}
-          </button>
-        )}
+        <div className="flex gap-2">
+          {livePreview && !inspecting && (
+            <button
+              onClick={() => onInspect(well)}
+              className="rounded bg-cyan-700 px-3 py-1 text-sm hover:bg-cyan-600"
+            >
+              {t("inspectSharp")}
+            </button>
+          )}
+          {!live && (
+            <button
+              onClick={refresh}
+              className="rounded bg-slate-700 px-3 py-1 text-sm hover:bg-slate-600"
+            >
+              {t("refresh")}
+            </button>
+          )}
+        </div>
       </div>
       {live ? (
         <canvas

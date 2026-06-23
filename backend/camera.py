@@ -45,6 +45,8 @@ class _Backend:
     def configure_still(self) -> None: ...
     def configure_preview(self) -> None: ...
     def capture_array(self) -> np.ndarray: ...
+    def set_roi(self, cx: float, cy: float, r: float) -> None: ...
+    def clear_roi(self) -> None: ...
     def close(self) -> None: ...
 
 
@@ -63,6 +65,10 @@ class PiCameraBackend(_Backend):
         )
         self._mode: str | None = None
         self._started = False
+        # 全传感器像素阵列尺寸 (ScalerCrop 的坐标系)
+        self._full = tuple(
+            self._cam.camera_properties.get("PixelArraySize", FULL_SIZE)
+        )
         self.configure_still()  # 首次配置 + start
 
     def _switch(self, mode: str, cfg) -> None:
@@ -92,6 +98,24 @@ class PiCameraBackend(_Backend):
         rgb = self._cam.capture_array()
         return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
+    def set_roi(self, cx: float, cy: float, r: float) -> None:
+        """硬件数字变焦:让 ISP 只读出该孔区域并放大到输出尺寸。
+
+        ScalerCrop 用全传感器像素坐标。裁剪框保持输出宽高比避免拉伸。
+        """
+        fw, fh = self._full
+        aspect = PREVIEW_SIZE[1] / PREVIEW_SIZE[0]
+        pad = 1.6
+        w = int(min(fw, max(1, r * fw * pad * 2)))
+        h = int(min(fh, max(1, w * aspect)))
+        x = int(min(max(0, cx * fw - w / 2), fw - w))
+        y = int(min(max(0, cy * fh - h / 2), fh - h))
+        self._cam.set_controls({"ScalerCrop": (x, y, w, h)})
+
+    def clear_roi(self) -> None:
+        fw, fh = self._full
+        self._cam.set_controls({"ScalerCrop": (0, 0, fw, fh)})
+
     def close(self) -> None:
         try:
             self._cam.stop()
@@ -112,6 +136,7 @@ class MockCamera(_Backend):
     def __init__(self) -> None:
         self._size = FULL_SIZE
         self._base = self._render_plate(FULL_SIZE)
+        self._roi: tuple[float, float, float] | None = None
 
     def configure_still(self) -> None:
         if self._size != FULL_SIZE:
@@ -150,12 +175,31 @@ class MockCamera(_Backend):
                     cv2.circle(img, (ox, oy), orad, (90, 95, 100), -1, cv2.LINE_AA)
         return img
 
+    def set_roi(self, cx: float, cy: float, r: float) -> None:
+        self._roi = (cx, cy, r)
+
+    def clear_roi(self) -> None:
+        self._roi = None
+
     def capture_array(self) -> np.ndarray:
         # 加一点噪声,让每帧略有不同 (预览串流看起来是 "活" 的)
         noise = np.random.default_rng().integers(
             -6, 6, self._base.shape, dtype=np.int16
         )
-        return np.clip(self._base.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+        frame = np.clip(self._base.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+        if self._roi:
+            # 模拟硬件 ROI:裁出该区域并放大回输出尺寸
+            h, w = frame.shape[:2]
+            cx, cy, r = self._roi
+            aspect = h / w
+            half_w = max(1, int(r * w * 1.6))
+            half_h = max(1, int(half_w * aspect))
+            x = int(min(max(0, cx * w - half_w), w - 2 * half_w)) if w > 2 * half_w else 0
+            y = int(min(max(0, cy * h - half_h), h - 2 * half_h)) if h > 2 * half_h else 0
+            crop = frame[y : y + 2 * half_h, x : x + 2 * half_w]
+            if crop.size:
+                frame = cv2.resize(crop, (w, h), interpolation=cv2.INTER_LINEAR)
+        return frame
 
     def close(self) -> None:  # pragma: no cover - 无资源可释放
         pass
@@ -181,6 +225,7 @@ class CameraController:
         self._backend = backend if backend is not None else _make_backend()
         self._lock = threading.Lock()
         self.is_mock = isinstance(self._backend, MockCamera)
+        self.roi_active = False
 
     def capture_array(self, preview: bool = False) -> np.ndarray:
         """拍一帧返回 BGR numpy array。preview=True 用低分辨率。"""
@@ -190,6 +235,17 @@ class CameraController:
             else:
                 self._backend.configure_still()
             return self._backend.capture_array()
+
+    def set_roi(self, cx: float, cy: float, r: float) -> None:
+        """硬件数字变焦到某个孔 (供实时高清单孔检视)。"""
+        with self._lock:
+            self._backend.set_roi(cx, cy, r)
+            self.roi_active = True
+
+    def clear_roi(self) -> None:
+        with self._lock:
+            self._backend.clear_roi()
+            self.roi_active = False
 
     def capture(self, path: str, preview: bool = False) -> str:
         """拍一帧并写到指定路径 (JPEG/TIFF 由扩展名决定)。"""

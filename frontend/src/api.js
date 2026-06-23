@@ -67,6 +67,18 @@ export async function stopTimelapse(experiment) {
   return r.json();
 }
 
+// 实时预览硬件数字变焦 (单孔高清检视)
+export async function setPreviewRoi(cx, cy, r) {
+  await fetch(
+    u(`/api/preview/roi?cx=${cx.toFixed(5)}&cy=${cy.toFixed(5)}&r=${r.toFixed(5)}`),
+    { method: "POST" }
+  );
+}
+
+export async function clearPreviewRoi() {
+  await fetch(u("/api/preview/roi/clear"), { method: "POST" });
+}
+
 export async function listExperiments() {
   const r = await fetch(u("/api/experiments"));
   return r.json();

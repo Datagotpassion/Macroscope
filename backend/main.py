@@ -163,6 +163,19 @@ async def crop_region(cx: float, cy: float, r: float):
     return Response(content=jpeg, media_type="image/jpeg")
 
 
+@app.post("/api/preview/roi")
+async def set_preview_roi(cx: float, cy: float, r: float):
+    """硬件数字变焦:让实时预览只读出该孔区域并放大 (单孔高清检视)。"""
+    camera.set_roi(cx, cy, r)
+    return {"roi": True}
+
+
+@app.post("/api/preview/roi/clear")
+async def clear_preview_roi():
+    camera.clear_roi()
+    return {"roi": False}
+
+
 @app.post("/api/save")
 async def save_frame(experiment: str):
     """用户确认保存当前缓存帧到磁盘 (Pi 端)。"""
@@ -245,6 +258,9 @@ async def preview(ws: WebSocket):
         # 取消可能仍在跑的预抓取任务,避免悬挂
         if next_frame is not None and not next_frame.done():
             next_frame.cancel()
+        # 预览结束时清掉 ROI,避免之后的全板拍摄被意外裁剪
+        if camera.roi_active:
+            camera.clear_roi()
 
 
 # ── 前端静态文件 ──

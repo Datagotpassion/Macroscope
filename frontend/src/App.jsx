@@ -5,7 +5,14 @@ import TimelapseControl from "./TimelapseControl";
 import LocalSave from "./LocalSave";
 import Settings from "./Settings";
 import { useI18n } from "./i18n.jsx";
-import { capture, getStatus, openPreview, plateImageUrl } from "./api";
+import {
+  capture,
+  getStatus,
+  openPreview,
+  plateImageUrl,
+  setPreviewRoi,
+  clearPreviewRoi,
+} from "./api";
 import { loadGrid, saveGrid, gridFromWells, DEFAULT_GRID } from "./grid";
 
 export default function App() {
@@ -22,6 +29,25 @@ export default function App() {
   const [showMask, setShowMask] = React.useState(true);
   const [editGrid, setEditGrid] = React.useState(false);
   const [autoSave, setAutoSave] = React.useState(false);
+  const [inspectWell, setInspectWell] = React.useState(null); // 硬件变焦检视中的孔
+
+  const startInspect = React.useCallback(async (well) => {
+    setInspectWell(well);
+    try {
+      await setPreviewRoi(well.x, well.y, well.r);
+    } catch (e) {
+      console.error("[inspect] set roi failed", e);
+    }
+  }, []);
+
+  const stopInspect = React.useCallback(async () => {
+    setInspectWell(null);
+    try {
+      await clearPreviewRoi();
+    } catch (e) {
+      console.error("[inspect] clear roi failed", e);
+    }
+  }, []);
 
   // 手动网格 (持久化到 localStorage,固定支架只需对齐一次)
   const [grid, setGrid] = React.useState(loadGrid);
@@ -52,6 +78,7 @@ export default function App() {
   // 拍照 (F1, F3)。busy 一定会复位,自动保存放在 busy 之外,不会卡住按钮。
   const doCapture = async () => {
     if (busy) return;
+    if (inspectWell) await stopInspect(); // 全板拍摄前先退出单孔检视
     setBusy(true);
     try {
       const data = await capture();
@@ -75,6 +102,11 @@ export default function App() {
     const g = gridFromWells(wells);
     if (g) setGrid(g);
   };
+
+  // 关闭实时预览时自动退出检视 (ROI 只在预览流里有意义)
+  React.useEffect(() => {
+    if (!livePreview && inspectWell) stopInspect();
+  }, [livePreview, inspectWell, stopInspect]);
 
   // 实时预览开关 (F2)
   React.useEffect(() => {
@@ -177,7 +209,22 @@ export default function App() {
         <div className="lg:col-span-2">
           {livePreview ? (
             <div className="space-y-2">
-              <div className="text-sm text-slate-400">{t("previewHeader")}</div>
+              <div className="flex items-center gap-3 text-sm text-slate-400">
+                <span>{t("previewHeader")}</span>
+                {inspectWell && (
+                  <>
+                    <button
+                      onClick={stopInspect}
+                      className="rounded bg-slate-700 px-2 py-0.5 hover:bg-slate-600"
+                    >
+                      {t("backToPlate")}
+                    </button>
+                    <span className="font-semibold text-cyan-300">
+                      {t("wellTitle", inspectWell.label)}
+                    </span>
+                  </>
+                )}
+              </div>
               {previewUrl ? (
                 <div className="relative">
                   <img
@@ -185,14 +232,16 @@ export default function App() {
                     alt="live"
                     className="block w-full rounded-lg border border-slate-700"
                   />
-                  <GridMask
-                    grid={grid}
-                    setGrid={setGrid}
-                    edit={editGrid}
-                    show={showMask}
-                    onSelectWell={setSelectedWell}
-                    selected={selectedWell?.label}
-                  />
+                  {!inspectWell && (
+                    <GridMask
+                      grid={grid}
+                      setGrid={setGrid}
+                      edit={editGrid}
+                      show={showMask}
+                      onSelectWell={setSelectedWell}
+                      selected={selectedWell?.label}
+                    />
+                  )}
                 </div>
               ) : (
                 <div className="flex h-96 items-center justify-center rounded-lg border border-slate-700 text-slate-500">
@@ -229,6 +278,8 @@ export default function App() {
             well={selectedWell}
             livePreview={livePreview}
             previewUrl={previewUrl}
+            inspecting={!!inspectWell}
+            onInspect={startInspect}
           />
           <LocalSave
             experiment={experiment}

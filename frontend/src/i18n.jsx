@@ -22,6 +22,8 @@ const translations = {
     refresh: "刷新",
     zoomLive: "实时",
     zoomStatic: "静帧",
+    inspectSharp: "高清检视",
+    backToPlate: "← 返回全板",
 
     timelapseTitle: "实验 & 定时拍摄",
     experimentPlaceholder: "实验名",
@@ -89,6 +91,8 @@ const translations = {
     refresh: "Refresh",
     zoomLive: "Live",
     zoomStatic: "Still",
+    inspectSharp: "Inspect (sharp)",
+    backToPlate: "← Back to plate",
 
     timelapseTitle: "Experiment & Timelapse",
     experimentPlaceholder: "Experiment name",

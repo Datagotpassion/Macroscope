@@ -71,6 +71,16 @@ export async function stopTimelapse(experiment) {
 export const wellSnapshotUrl = (cx, cy, r) =>
   u(`/api/well/snapshot?cx=${cx.toFixed(5)}&cy=${cy.toFixed(5)}&r=${r.toFixed(5)}&t=${Date.now()}`);
 
+// 跳动检测 (F16):抓一段高帧率序列分析收缩频率。期间相机独占,预览暂停。
+export async function detectBeat(cx, cy, r, duration = 8) {
+  const res = await fetch(
+    u(`/api/well/beat?cx=${cx.toFixed(5)}&cy=${cy.toFixed(5)}&r=${r.toFixed(5)}&duration=${duration}`),
+    { method: "POST" }
+  );
+  if (!res.ok) throw new Error("beat detection failed");
+  return res.json();
+}
+
 // 实时预览硬件数字变焦 (单孔高清检视)
 export async function setPreviewRoi(cx, cy, r) {
   await fetch(

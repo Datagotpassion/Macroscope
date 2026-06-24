@@ -2,6 +2,7 @@ import React from "react";
 import GridMask from "./GridMask";
 import WellDetail from "./WellDetail";
 import InspectSnapshot from "./InspectSnapshot";
+import BeatDetect from "./BeatDetect";
 import TimelapseControl from "./TimelapseControl";
 import LocalSave from "./LocalSave";
 import Settings from "./Settings";
@@ -203,6 +204,7 @@ export default function App() {
                 <span className="text-xs">{t("snapMode")}</span>
               </div>
               <InspectSnapshot key={inspectWell.label} well={inspectWell} />
+              <BeatDetect key={`beat-${inspectWell.label}`} well={inspectWell} />
             </div>
           ) : livePreview ? (
             <div className="space-y-2">

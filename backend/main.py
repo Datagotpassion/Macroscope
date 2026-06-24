@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+import beat
 from camera import CameraController, _log
 from image_store import ImageStore
 from plate_detector import PlateDetector
@@ -177,6 +178,24 @@ async def well_snapshot(cx: float, cy: float, r: float):
     crop = image[y1:y2, x1:x2]
     jpeg = await asyncio.to_thread(_encode_jpeg, crop, 92)
     return Response(content=jpeg, media_type="image/jpeg")
+
+
+@app.post("/api/well/beat")
+async def detect_beat(cx: float, cy: float, r: float, duration: float = 8.0):
+    """跳动检测 (F16):对该孔抓一段高帧率序列,分析收缩频率。
+
+    抓帧期间相机被独占,实时预览会暂停几秒。
+    """
+    duration = max(2.0, min(20.0, duration))
+    times, signal, motion = await asyncio.to_thread(
+        camera.measure_motion, cx, cy, r, duration
+    )
+    result = await asyncio.to_thread(beat.analyze, times, signal, motion)
+    _log(
+        f"[beat] n={result.get('n')} fps={result.get('fps')} "
+        f"bpm={result.get('bpm')} conf={result.get('confidence')} motion={result.get('motion')}"
+    )
+    return result
 
 
 @app.post("/api/preview/roi")

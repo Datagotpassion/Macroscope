@@ -9,8 +9,10 @@
 
 from __future__ import annotations
 
+import math
 import sys
 import threading
+import time
 
 import numpy as np
 
@@ -212,6 +214,9 @@ class MockCamera(_Backend):
             crop = frame[y : y + 2 * half_h, x : x + 2 * half_w]
             if crop.size:
                 frame = cv2.resize(crop, (w, h), interpolation=cv2.INTER_LINEAR)
+            # 模拟跳动:ROI 下整体亮度按 ~1.5Hz (90 bpm) 起伏,供跳动检测联调
+            mod = 1.0 + 0.08 * math.sin(2 * math.pi * 1.5 * time.time())
+            frame = np.clip(frame.astype(np.float32) * mod, 0, 255).astype(np.uint8)
         return frame
 
     def close(self) -> None:  # pragma: no cover - 无资源可释放
@@ -259,6 +264,42 @@ class CameraController:
         with self._lock:
             self._backend.clear_roi()
             self.roi_active = False
+
+    def measure_motion(
+        self, cx: float, cy: float, r: float, duration: float = 8.0
+    ) -> tuple[list[float], list[float], float]:
+        """对某个孔抓一段高帧率序列,返回 (times, 平均亮度序列, 平均帧差).
+
+        全程持锁独占相机 (预览会暂停几秒),保证帧率均匀。先切到预览(ROI)模式,
+        再尽快连续抓帧;每帧记录平均亮度 (供跳动频率分析) 和相邻帧差 (运动强度)。
+        """
+        times: list[float] = []
+        signal: list[float] = []
+        motion_acc = 0.0
+        motion_n = 0
+        with self._lock:
+            self._backend.configure_preview()
+            self._backend.set_roi(cx, cy, r)
+            self.roi_active = True
+            try:
+                self._backend.capture_array()  # 预热一帧 (ROI 刚生效)
+                prev = None
+                t0 = time.perf_counter()
+                while time.perf_counter() - t0 < duration:
+                    frame = self._backend.capture_array()
+                    small = cv2.resize(frame, (192, 144))
+                    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype(np.float32)
+                    times.append(time.perf_counter() - t0)
+                    signal.append(float(gray.mean()))
+                    if prev is not None:
+                        motion_acc += float(np.mean(np.abs(gray - prev)))
+                        motion_n += 1
+                    prev = gray
+            finally:
+                self._backend.clear_roi()
+                self.roi_active = False
+        motion = motion_acc / motion_n if motion_n else 0.0
+        return times, signal, motion
 
     def capture(self, path: str, preview: bool = False) -> str:
         """拍一帧并写到指定路径 (JPEG/TIFF 由扩展名决定)。"""

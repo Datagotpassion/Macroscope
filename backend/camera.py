@@ -49,6 +49,8 @@ class _Backend:
     def capture_array(self) -> np.ndarray: ...
     def set_roi(self, cx: float, cy: float, r: float) -> None: ...
     def clear_roi(self) -> None: ...
+    def lock_exposure(self) -> None: ...
+    def unlock_exposure(self) -> None: ...
     def close(self) -> None: ...
 
 
@@ -130,6 +132,29 @@ class PiCameraBackend(_Backend):
             self._cam.set_controls({"ScalerCrop": self._max_crop()})
         except Exception as e:  # noqa: BLE001
             _log(f"[roi] clear failed: {e!r}")
+
+    def lock_exposure(self) -> None:
+        """锁定当前 (全画面测光的) 曝光/白平衡。
+
+        跳动检测裁到小孔区域时,自动曝光会重新测光,产生一个亮度阶跃 (被误判成
+        慢频跳动),还会让之后的全幅快照发暗。锁死曝光后基线才平,只剩真实跳动。
+        """
+        try:
+            md = self._cam.capture_metadata()
+            ctrls = {"AeEnable": False, "AwbEnable": False}
+            if "ExposureTime" in md:
+                ctrls["ExposureTime"] = int(md["ExposureTime"])
+            if "AnalogueGain" in md:
+                ctrls["AnalogueGain"] = float(md["AnalogueGain"])
+            self._cam.set_controls(ctrls)
+        except Exception as e:  # noqa: BLE001
+            _log(f"[beat] lock_exposure failed: {e!r}")
+
+    def unlock_exposure(self) -> None:
+        try:
+            self._cam.set_controls({"AeEnable": True, "AwbEnable": True})
+        except Exception as e:  # noqa: BLE001
+            _log(f"[beat] unlock_exposure failed: {e!r}")
 
     def close(self) -> None:
         try:
@@ -279,10 +304,17 @@ class CameraController:
         motion_n = 0
         with self._lock:
             self._backend.configure_preview()
+            # 全画面先曝光稳定几帧,再锁死曝光 (避免裁孔后自动测光的亮度阶跃)
+            for _ in range(4):
+                self._backend.capture_array()
+            self._backend.lock_exposure()
             self._backend.set_roi(cx, cy, r)
             self.roi_active = True
             try:
-                self._backend.capture_array()  # 预热一帧 (ROI 刚生效)
+                # 丢掉 ROI 刚生效后的过渡帧 (~0.6s)
+                t_settle = time.perf_counter()
+                while time.perf_counter() - t_settle < 0.6:
+                    self._backend.capture_array()
                 prev = None
                 t0 = time.perf_counter()
                 while time.perf_counter() - t0 < duration:
@@ -297,6 +329,7 @@ class CameraController:
                     prev = gray
             finally:
                 self._backend.clear_roi()
+                self._backend.unlock_exposure()
                 self.roi_active = False
         motion = motion_acc / motion_n if motion_n else 0.0
         return times, signal, motion

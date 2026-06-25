@@ -36,9 +36,8 @@ export default function BeatDetect({ well }) {
   const data = result
     ? result.times.map((tt, i) => ({ t: +tt.toFixed(2), v: result.signal[i] }))
     : [];
-  // 判定「在跳」:有足够运动 + FFT 主峰够突出
-  const beating =
-    result && result.ok && result.confidence >= 0.15 && result.motion >= 0.3;
+  // 是否在跳由后端用谱信噪比判定
+  const beating = result && result.beating;
 
   return (
     <div className="space-y-2 rounded-lg border border-slate-700 p-3">

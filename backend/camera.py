@@ -64,8 +64,12 @@ class PiCameraBackend(_Backend):
         self._still_cfg = self._cam.create_still_configuration(
             main={"size": FULL_SIZE, "format": "RGB888"}
         )
+        # raw 用全视场 binned 模式 (2028x1520),强制预览的视场 = 全分辨率静帧的视场。
+        # 否则 picamera2 会自动选 1332x990 中心裁剪模式,导致预览和静帧视场不一致 ——
+        # 在预览上对齐的网格,放大/跳动检测 (用全幅静帧/全传感器 ScalerCrop) 就会偏。
         self._preview_cfg = self._cam.create_preview_configuration(
-            main={"size": PREVIEW_SIZE, "format": "RGB888"}
+            main={"size": PREVIEW_SIZE, "format": "RGB888"},
+            raw={"size": (2028, 1520)},
         )
         self._mode: str | None = None
         self._started = False
@@ -292,16 +296,18 @@ class CameraController:
 
     def measure_motion(
         self, cx: float, cy: float, r: float, duration: float = 8.0
-    ) -> tuple[list[float], list[float], float]:
-        """对某个孔抓一段高帧率序列,返回 (times, 平均亮度序列, 平均帧差).
+    ) -> tuple[list[float], list[float], float, "np.ndarray | None"]:
+        """对某个孔抓一段高帧率序列,返回 (times, 平均亮度序列, 平均帧差, 代表帧).
 
         全程持锁独占相机 (预览会暂停几秒),保证帧率均匀。先切到预览(ROI)模式,
         再尽快连续抓帧;每帧记录平均亮度 (供跳动频率分析) 和相邻帧差 (运动强度)。
+        代表帧 = 第一帧 ROI 画面,供前端显示「实际测量的区域」(去黑盒)。
         """
         times: list[float] = []
         signal: list[float] = []
         motion_acc = 0.0
         motion_n = 0
+        patch: np.ndarray | None = None
         with self._lock:
             self._backend.configure_preview()
             # 全画面先曝光稳定几帧,再锁死曝光 (避免裁孔后自动测光的亮度阶跃)
@@ -319,6 +325,8 @@ class CameraController:
                 t0 = time.perf_counter()
                 while time.perf_counter() - t0 < duration:
                     frame = self._backend.capture_array()
+                    if patch is None:
+                        patch = frame.copy()  # 代表帧:实际测量的孔区域
                     small = cv2.resize(frame, (192, 144))
                     gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype(np.float32)
                     times.append(time.perf_counter() - t0)
@@ -332,7 +340,7 @@ class CameraController:
                 self._backend.unlock_exposure()
                 self.roi_active = False
         motion = motion_acc / motion_n if motion_n else 0.0
-        return times, signal, motion
+        return times, signal, motion, patch
 
     def capture(self, path: str, preview: bool = False) -> str:
         """拍一帧并写到指定路径 (JPEG/TIFF 由扩展名决定)。"""

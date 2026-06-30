@@ -63,6 +63,16 @@ export default function BeatDetect({ well }) {
 
       {result && status === "done" && (
         <>
+          {result.patch && (
+            <div className="flex items-center gap-2">
+              <img
+                src={result.patch}
+                alt="measured region"
+                className="h-20 w-20 rounded border border-slate-600 object-cover"
+              />
+              <span className="text-xs text-slate-400">{t("beatPatchHint")}</span>
+            </div>
+          )}
           <div className="flex flex-wrap items-baseline gap-4">
             {beating ? (
               <>

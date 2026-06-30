@@ -35,6 +35,7 @@ const translations = {
     beatCrosscheck: "峰值计数",
     beatNone: "未检测到明显跳动 (信号太弱或不规律)",
     beatWaveformHint: "波形 = 单孔平均亮度随时间;规律起伏即为跳动。",
+    beatPatchHint: "实际测量的区域 — 确认 organoid 在框内",
 
     timelapseTitle: "实验 & 定时拍摄",
     experimentPlaceholder: "实验名",
@@ -117,6 +118,7 @@ const translations = {
     beatCrosscheck: "Peak count",
     beatNone: "No clear beating detected (signal too weak or irregular)",
     beatWaveformHint: "Waveform = well's mean brightness over time; regular rises/falls = beating.",
+    beatPatchHint: "The region actually measured — check the organoid is inside",
 
     timelapseTitle: "Experiment & Timelapse",
     experimentPlaceholder: "Experiment name",

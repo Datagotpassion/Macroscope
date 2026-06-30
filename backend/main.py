@@ -7,6 +7,7 @@ Pi 是服务器,浏览器只是显示端。提供 REST API + WebSocket 预览,
 from __future__ import annotations
 
 import asyncio
+import base64
 import time
 from datetime import datetime
 from pathlib import Path
@@ -187,10 +188,17 @@ async def detect_beat(cx: float, cy: float, r: float, duration: float = 8.0):
     抓帧期间相机被独占,实时预览会暂停几秒。
     """
     duration = max(2.0, min(20.0, duration))
-    times, signal, motion = await asyncio.to_thread(
+    times, signal, motion, patch = await asyncio.to_thread(
         camera.measure_motion, cx, cy, r, duration
     )
     result = await asyncio.to_thread(beat.analyze, times, signal, motion)
+    # 把「实际测量的孔区域」缩略图一并返回 (去黑盒:用户能看清测的是不是 organoid)
+    if patch is not None:
+        ok, buf = cv2.imencode(".jpg", patch, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        if ok:
+            result["patch"] = "data:image/jpeg;base64," + base64.b64encode(
+                buf.tobytes()
+            ).decode("ascii")
     _log(
         f"[beat] n={result.get('n')} fps={result.get('fps')} "
         f"bpm={result.get('bpm')} conf={result.get('confidence')} motion={result.get('motion')}"

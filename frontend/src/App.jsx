@@ -203,7 +203,7 @@ export default function App() {
             <input
               type="range"
               min="0.01"
-              max="0.05"
+              max="0.075"
               step="0.001"
               value={grid.r}
               onChange={(e) => setGrid({ ...grid, r: Number(e.target.value) })}

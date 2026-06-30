@@ -38,8 +38,8 @@ detector = PlateDetector()
 store = ImageStore()
 scheduler = Scheduler(camera, store)
 
-# 实时预览参数。FPS 是目标上限,实际受相机/编码速度限制。
-PREVIEW_FPS = 25
+# 实时预览参数。PREVIEW_FPS 设得很高 = 实际不限速,跑多快取决于相机/编码/网络。
+PREVIEW_FPS = 120
 PREVIEW_QUALITY = 65
 
 
@@ -271,6 +271,8 @@ async def preview(ws: WebSocket):
     loop = asyncio.get_event_loop()
     interval = 1.0 / PREVIEW_FPS
     next_frame: asyncio.Task | None = None
+    fps_t0 = loop.time()
+    fps_n = 0
     try:
         # 先抓第一帧,之后边发边抓下一帧
         next_frame = asyncio.create_task(asyncio.to_thread(camera.capture_array, True))
@@ -292,6 +294,12 @@ async def preview(ws: WebSocket):
                 await asyncio.sleep(0.05)
                 continue
             await ws.send_bytes(jpeg)
+            # 每 ~5 秒打印一次实际预览帧率,便于调优
+            fps_n += 1
+            if loop.time() - fps_t0 >= 5.0:
+                _log(f"[preview] {fps_n / (loop.time() - fps_t0):.1f} fps")
+                fps_t0 = loop.time()
+                fps_n = 0
             # 只睡剩余时间;若处理已超过一帧预算就不睡
             await asyncio.sleep(max(0.0, interval - (loop.time() - t0)))
     except (WebSocketDisconnect, asyncio.CancelledError):

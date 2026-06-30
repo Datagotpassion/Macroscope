@@ -1,5 +1,5 @@
 import React from "react";
-import { gridWells } from "./grid";
+import { gridWells, handleLabels } from "./grid";
 
 const clamp = (v) => Math.min(1, Math.max(0, v));
 
@@ -82,10 +82,11 @@ function GridMask({ grid, setGrid, edit, show, onSelectWell, selected }) {
 
   const wells = gridWells(grid);
   const rPx = grid.r * box.w;
+  const hl = handleLabels(grid);
   const handles = [
-    ["a1", "A1"],
-    ["a12", "A12"],
-    ["h1", "H1"],
+    ["a1", hl.a1],
+    ["a12", hl.a12],
+    ["h1", hl.h1],
   ];
 
   // 容器本身不拦截事件,只有交互元素 (拖拽层/孔按钮/控制点) 才接收

@@ -80,6 +80,8 @@ const translations = {
     autoFit: "从检测套用",
     resetGrid: "重置",
     wellSize: "孔大小",
+    gridRows: "行",
+    gridCols: "列",
     gridHint: "拖动粉色 A1 / A12 / H1 控制点到板上对应的孔;拖网格内部可整体平移。",
 
     switchTo: "English",
@@ -163,6 +165,8 @@ const translations = {
     autoFit: "Auto-fit",
     resetGrid: "Reset",
     wellSize: "Well size",
+    gridRows: "Rows",
+    gridCols: "Cols",
     gridHint:
       "Drag the pink A1 / A12 / H1 handles onto those wells; drag inside the grid to move it all.",
 

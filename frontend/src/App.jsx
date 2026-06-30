@@ -160,6 +160,32 @@ export default function App() {
       {editGrid && (
         <div className="mb-3 flex flex-wrap items-center gap-4 rounded-lg border border-pink-700/50 bg-pink-950/20 p-3 text-sm">
           <span className="text-pink-200">{t("gridHint")}</span>
+          <label className="flex items-center gap-1">
+            {t("gridRows")}
+            <input
+              type="number"
+              min="1"
+              max="8"
+              className="w-14 rounded bg-slate-800 px-2 py-1"
+              value={grid.rows ?? 8}
+              onChange={(e) =>
+                setGrid({ ...grid, rows: Math.max(1, Math.min(8, Number(e.target.value) || 1)) })
+              }
+            />
+          </label>
+          <label className="flex items-center gap-1">
+            {t("gridCols")}
+            <input
+              type="number"
+              min="1"
+              max="12"
+              className="w-14 rounded bg-slate-800 px-2 py-1"
+              value={grid.cols ?? 12}
+              onChange={(e) =>
+                setGrid({ ...grid, cols: Math.max(1, Math.min(12, Number(e.target.value) || 1)) })
+              }
+            />
+          </label>
           <button
             onClick={autoFit}
             className="rounded bg-slate-700 px-3 py-1 hover:bg-slate-600"

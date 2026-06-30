@@ -40,6 +40,10 @@ except ImportError:  # pragma: no cover - cv2 缺失时给出清晰报错
 FULL_SIZE = (4056, 3040)
 PREVIEW_SIZE = (1014, 760)  # 1/4 分辨率,降低串流带宽
 
+# 单孔 ROI 相对孔大小的倍数。1.0 = ROI 恰好等于孔 (跳动检测测试用);
+# 之前是 1.6 (带余量便于检视取景)。改这一个值即可还原。
+ROI_PADDING = 1.0
+
 
 class _Backend:
     """相机后端的抽象基类。"""
@@ -122,8 +126,10 @@ class PiCameraBackend(_Backend):
         try:
             mx, my, mw, mh = self._max_crop()
             aspect = PREVIEW_SIZE[1] / PREVIEW_SIZE[0]
-            w = int(max(64, min(mw, r * mw * 1.6 * 2)))
-            h = int(max(64, min(mh, w * aspect)))
+            # ROI 高度 = 孔直径 × ROI_PADDING (恰好覆盖整个孔),宽度按输出宽高比补足
+            diam = 2 * r * mw * ROI_PADDING
+            h = int(max(48, min(mh, diam)))
+            w = int(max(64, min(mw, h / aspect)))
             x = int(mx + min(max(0, cx * mw - w / 2), mw - w))
             y = int(my + min(max(0, cy * mh - h / 2), mh - h))
             _log(f"[roi] set ScalerCrop=({x},{y},{w},{h}) within max=({mx},{my},{mw},{mh})")
@@ -232,12 +238,12 @@ class MockCamera(_Backend):
         )
         frame = np.clip(self._base.astype(np.int16) + noise, 0, 255).astype(np.uint8)
         if self._roi:
-            # 模拟硬件 ROI:裁出该区域并放大回输出尺寸
+            # 模拟硬件 ROI:裁出该区域并放大回输出尺寸。
+            # 半高 = 孔半径 × ROI_PADDING (恰好覆盖孔),半宽按输出宽高比补足。
             h, w = frame.shape[:2]
             cx, cy, r = self._roi
-            aspect = h / w
-            half_w = max(1, int(r * w * 1.6))
-            half_h = max(1, int(half_w * aspect))
+            half_h = max(1, int(r * w * ROI_PADDING))
+            half_w = max(1, int(half_h * w / h))
             x = int(min(max(0, cx * w - half_w), w - 2 * half_w)) if w > 2 * half_w else 0
             y = int(min(max(0, cy * h - half_h), h - 2 * half_h)) if h > 2 * half_h else 0
             crop = frame[y : y + 2 * half_h, x : x + 2 * half_w]

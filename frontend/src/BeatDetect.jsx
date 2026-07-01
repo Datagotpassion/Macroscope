@@ -10,7 +10,7 @@ import {
 import { detectBeat } from "./api";
 import { useI18n } from "./i18n.jsx";
 
-const DURATION = 8; // 秒
+const DURATION = 30; // 秒
 
 // 跳动检测 (F16):抓一段高帧率序列,分析单孔收缩频率,画出波形。
 export default function BeatDetect({ well }) {

@@ -193,6 +193,12 @@ export default function App() {
             {t("autoFit")}
           </button>
           <button
+            onClick={() => setGrid({ ...grid, overrides: {} })}
+            className="rounded bg-slate-700 px-3 py-1 hover:bg-slate-600"
+          >
+            {t("resetWells")}
+          </button>
+          <button
             onClick={() => setGrid(DEFAULT_GRID)}
             className="rounded bg-slate-700 px-3 py-1 hover:bg-slate-600"
           >

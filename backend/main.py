@@ -187,7 +187,7 @@ async def detect_beat(cx: float, cy: float, r: float, duration: float = 8.0):
 
     抓帧期间相机被独占,实时预览会暂停几秒。
     """
-    duration = max(2.0, min(20.0, duration))
+    duration = max(2.0, min(60.0, duration))
     times, frames, patch = await asyncio.to_thread(
         camera.measure_motion, cx, cy, r, duration
     )

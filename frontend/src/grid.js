@@ -23,6 +23,8 @@ export const DEFAULT_GRID = {
   r: 0.022,
   rows: DEFAULT_ROWS,
   cols: DEFAULT_COLS,
+  // 单孔微调:{ 标签: {x,y,r} } 覆盖该孔的均匀网格位置/大小 (贴合每个 organoid)
+  overrides: {},
 };
 
 export const gridRows = (g) => g.rows || DEFAULT_ROWS;
@@ -37,19 +39,27 @@ export function handleLabels(g) {
   };
 }
 
-// 由三角点生成所有孔 (归一化坐标)
+// 由三角点生成所有孔 (归一化坐标),再套用单孔微调覆盖。
 export function gridWells(g) {
   const rows = gridRows(g);
   const cols = gridCols(g);
+  const ov = g.overrides || {};
   const out = [];
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const fc = cols > 1 ? c / (cols - 1) : 0;
       const fr = rows > 1 ? r / (rows - 1) : 0;
-      const x = g.a1.x + (g.a12.x - g.a1.x) * fc + (g.h1.x - g.a1.x) * fr;
-      const y = g.a1.y + (g.a12.y - g.a1.y) * fc + (g.h1.y - g.a1.y) * fr;
+      const bx = g.a1.x + (g.a12.x - g.a1.x) * fc + (g.h1.x - g.a1.x) * fr;
+      const by = g.a1.y + (g.a12.y - g.a1.y) * fc + (g.h1.y - g.a1.y) * fr;
       const label = (ROW_LABELS[r] || "?" + (r + 1)) + (c + 1);
-      out.push({ label, x, y, r: g.r });
+      const o = ov[label];
+      out.push({
+        label,
+        x: o && o.x != null ? o.x : bx,
+        y: o && o.y != null ? o.y : by,
+        r: o && o.r != null ? o.r : g.r,
+        overridden: !!o,
+      });
     }
   }
   return out;
@@ -64,7 +74,7 @@ const STORAGE_KEY = "platescope_grid_v2";
 export function loadGrid() {
   try {
     const g = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    if (valid(g)) return { rows: DEFAULT_ROWS, cols: DEFAULT_COLS, ...g };
+    if (valid(g)) return { rows: DEFAULT_ROWS, cols: DEFAULT_COLS, overrides: {}, ...g };
   } catch {
     /* ignore */
   }

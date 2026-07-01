@@ -78,7 +78,19 @@ def analyze(times, frames) -> dict:
 
     dur = float(times[-1] - times[0])
     fps = (n - 1) / dur if dur > 0 else 0.0
+
+    # 长采集抽帧:把有效帧率压到 ~20fps。跳动 <5Hz,20fps 足够 (Nyquist 10Hz),
+    # 又能把 PCA 的计算量 (Gram ~ n^2) 控制住;30s 采集仍有很细的频率分辨率。
+    if fps > 30 and n > 500:
+        step = max(1, round(fps / 20))
+        frames = frames[::step]
+        times = list(np.asarray(times, dtype=float)[::step])
+        n = len(times)
+        dur = float(times[-1] - times[0])
+        fps = (n - 1) / dur if dur > 0 else 0.0
+    out["n"] = n
     out["fps"] = round(fps, 1)
+    out["times"] = [round(float(t), 3) for t in times]
 
     flat = frames.reshape(n, -1)
     centered = flat - flat.mean(axis=0, keepdims=True)  # 去每像素的时间均值

@@ -92,6 +92,7 @@ export default function BeatDetect({ well }) {
             )}
             <span className="text-xs text-slate-500">
               {result.n} frames @ {result.fps} fps
+              {result.method ? ` · ${result.method}` : ""}
             </span>
           </div>
           <div className="h-32 w-full">

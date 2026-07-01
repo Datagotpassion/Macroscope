@@ -302,17 +302,15 @@ class CameraController:
 
     def measure_motion(
         self, cx: float, cy: float, r: float, duration: float = 8.0
-    ) -> tuple[list[float], list[float], float, "np.ndarray | None"]:
-        """对某个孔抓一段高帧率序列,返回 (times, 平均亮度序列, 平均帧差, 代表帧).
+    ) -> tuple[list[float], "np.ndarray", "np.ndarray | None"]:
+        """对某个孔抓一段高帧率序列,返回 (times, 下采样灰度帧堆叠, 代表帧).
 
-        全程持锁独占相机 (预览会暂停几秒),保证帧率均匀。先切到预览(ROI)模式,
-        再尽快连续抓帧;每帧记录平均亮度 (供跳动频率分析) 和相邻帧差 (运动强度)。
-        代表帧 = 第一帧 ROI 画面,供前端显示「实际测量的区域」(去黑盒)。
+        全程持锁独占相机 (预览会暂停几秒),保证帧率均匀。先切到预览(ROI)模式、
+        锁死曝光、丢掉过渡帧,再尽快连续抓帧。返回每帧的小灰度图 (~100x75) 供
+        beat.analyze 做 PCA/运动分析;代表帧供前端显示「实际测量的区域」。
         """
         times: list[float] = []
-        signal: list[float] = []
-        motion_acc = 0.0
-        motion_n = 0
+        frames: list[np.ndarray] = []
         patch: np.ndarray | None = None
         with self._lock:
             self._backend.configure_preview()
@@ -327,26 +325,20 @@ class CameraController:
                 t_settle = time.perf_counter()
                 while time.perf_counter() - t_settle < 0.6:
                     self._backend.capture_array()
-                prev = None
                 t0 = time.perf_counter()
                 while time.perf_counter() - t0 < duration:
                     frame = self._backend.capture_array()
                     if patch is None:
                         patch = frame.copy()  # 代表帧:实际测量的孔区域
-                    small = cv2.resize(frame, (192, 144))
-                    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype(np.float32)
+                    small = cv2.resize(frame, (100, 75))
+                    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
                     times.append(time.perf_counter() - t0)
-                    signal.append(float(gray.mean()))
-                    if prev is not None:
-                        motion_acc += float(np.mean(np.abs(gray - prev)))
-                        motion_n += 1
-                    prev = gray
+                    frames.append(gray)
             finally:
                 self._backend.clear_roi()
                 self._backend.unlock_exposure()
                 self.roi_active = False
-        motion = motion_acc / motion_n if motion_n else 0.0
-        return times, signal, motion, patch
+        return times, np.array(frames, dtype=np.float32), patch
 
     def capture(self, path: str, preview: bool = False) -> str:
         """拍一帧并写到指定路径 (JPEG/TIFF 由扩展名决定)。"""

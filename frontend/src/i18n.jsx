@@ -36,6 +36,9 @@ const translations = {
     beatNone: "未检测到明显跳动 (信号太弱或不规律)",
     beatWaveformHint: "波形 = 收缩信号随时间 (自动选最强的:PCA/运动/亮度);规律起伏即为跳动。",
     beatPatchHint: "实际测量的区域 — 确认 organoid 在框内",
+    beatSave: "保存结果",
+    beatSaved: "已保存到跳动日志 (platescope_beats.csv) + 波形 JSON",
+    beatSaveFailed: (e) => `保存失败: ${e}`,
 
     timelapseTitle: "实验 & 定时拍摄",
     experimentPlaceholder: "实验名",
@@ -120,6 +123,9 @@ const translations = {
     beatNone: "No clear beating detected (signal too weak or irregular)",
     beatWaveformHint: "Waveform = contraction signal over time (best of PCA / motion / brightness); regular oscillation = beating.",
     beatPatchHint: "The region actually measured — check the organoid is inside",
+    beatSave: "Save result",
+    beatSaved: "Saved to beat log (platescope_beats.csv) + waveform JSON",
+    beatSaveFailed: (e) => `Save failed: ${e}`,
 
     timelapseTitle: "Experiment & Timelapse",
     experimentPlaceholder: "Experiment name",

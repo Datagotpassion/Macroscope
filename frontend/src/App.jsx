@@ -90,16 +90,30 @@ export default function App() {
     if (g) setGrid(g);
   };
 
-  // 实时预览开关 (F2)
+  // 实时预览开关 (F2) + 客户端实测帧率
+  const [previewFps, setPreviewFps] = React.useState(0);
+  const fpsCountRef = React.useRef(0);
   React.useEffect(() => {
-    if (!livePreview) return;
+    if (!livePreview) {
+      setPreviewFps(0);
+      return;
+    }
+    fpsCountRef.current = 0;
     const ws = openPreview((url) => {
+      fpsCountRef.current += 1;
       setPreviewUrl((prev) => {
         if (prev) URL.revokeObjectURL(prev);
         return url;
       });
     });
-    return () => ws.close();
+    const timer = setInterval(() => {
+      setPreviewFps(Math.round(fpsCountRef.current / 2));
+      fpsCountRef.current = 0;
+    }, 2000);
+    return () => {
+      ws.close();
+      clearInterval(timer);
+    };
   }, [livePreview]);
 
   return (
@@ -236,11 +250,22 @@ export default function App() {
                 <span className="text-xs">{t("snapMode")}</span>
               </div>
               <InspectSnapshot key={inspectWell.label} well={inspectWell} />
-              <BeatDetect key={`beat-${inspectWell.label}`} well={inspectWell} />
+              <BeatDetect
+                key={`beat-${inspectWell.label}`}
+                well={inspectWell}
+                experiment={experiment}
+              />
             </div>
           ) : livePreview ? (
             <div className="space-y-2">
-              <div className="text-sm text-slate-400">{t("previewHeader")}</div>
+              <div className="flex items-center gap-2 text-sm text-slate-400">
+                <span>{t("previewHeader")}</span>
+                {previewFps > 0 && (
+                  <span className="rounded bg-slate-700 px-1.5 py-0.5 text-xs text-slate-300">
+                    {previewFps} fps
+                  </span>
+                )}
+              </div>
               {previewUrl ? (
                 <div className="relative">
                   <img

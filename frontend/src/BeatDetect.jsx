@@ -8,21 +8,26 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { detectBeat } from "./api";
+import { appendCsvRow, saveText } from "./save";
 import { useI18n } from "./i18n.jsx";
 
 const DURATION = 30; // 秒
+const LOG_HEADER =
+  "timestamp,experiment,well,bpm,beating,confidence,method,fps,peak_bpm,n";
 
 // 跳动检测 (F16):抓一段高帧率序列,分析单孔收缩频率,画出波形。
-export default function BeatDetect({ well }) {
+export default function BeatDetect({ well, experiment }) {
   const { t } = useI18n();
   const [status, setStatus] = React.useState("idle"); // idle|measuring|done|error
   const [result, setResult] = React.useState(null);
   const [err, setErr] = React.useState("");
+  const [saveMsg, setSaveMsg] = React.useState("");
 
   const run = async () => {
     setStatus("measuring");
     setResult(null);
     setErr("");
+    setSaveMsg("");
     try {
       const r = await detectBeat(well.x, well.y, well.r, DURATION);
       setResult(r);
@@ -31,6 +36,55 @@ export default function BeatDetect({ well }) {
       setErr(e.message || String(e));
       setStatus("error");
     }
+  };
+
+  const saveResult = async () => {
+    if (!result) return;
+    const now = new Date();
+    const iso = now.toISOString();
+    const ts = iso.replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "_");
+    const exp = experiment || "exp";
+    const row = [
+      iso,
+      exp,
+      well.label,
+      result.bpm,
+      result.beating ? 1 : 0,
+      result.confidence,
+      result.method,
+      result.fps,
+      result.peak_bpm,
+      result.n,
+    ].join(",");
+    try {
+      await appendCsvRow("platescope_beats.csv", LOG_HEADER, row);
+      // 同时存一份原始数据 (波形) 便于复查
+      await saveText(
+        `${exp}_${well.label}_${ts}_beat.json`,
+        JSON.stringify(
+          {
+            timestamp: iso,
+            experiment: exp,
+            well: well.label,
+            bpm: result.bpm,
+            beating: result.beating,
+            confidence: result.confidence,
+            method: result.method,
+            fps: result.fps,
+            peak_bpm: result.peak_bpm,
+            n: result.n,
+            times: result.times,
+            signal: result.signal,
+          },
+          null,
+          0
+        )
+      );
+      setSaveMsg(t("beatSaved"));
+    } catch (e) {
+      setSaveMsg(t("beatSaveFailed", e.message || String(e)));
+    }
+    setTimeout(() => setSaveMsg(""), 4000);
   };
 
   const data = result
@@ -45,14 +99,25 @@ export default function BeatDetect({ well }) {
         <h3 className="font-semibold">
           {t("beatTitle")} · {well.label}
         </h3>
-        <button
-          onClick={run}
-          disabled={status === "measuring"}
-          className="rounded bg-purple-600 px-3 py-1 text-sm hover:bg-purple-500 disabled:opacity-50"
-        >
-          {status === "measuring" ? t("beatMeasuring") : t("beatRun")}
-        </button>
+        <div className="flex gap-2">
+          {result && status === "done" && (
+            <button
+              onClick={saveResult}
+              className="rounded bg-emerald-600 px-3 py-1 text-sm hover:bg-emerald-500"
+            >
+              {t("beatSave")}
+            </button>
+          )}
+          <button
+            onClick={run}
+            disabled={status === "measuring"}
+            className="rounded bg-purple-600 px-3 py-1 text-sm hover:bg-purple-500 disabled:opacity-50"
+          >
+            {status === "measuring" ? t("beatMeasuring") : t("beatRun")}
+          </button>
+        </div>
       </div>
+      {saveMsg && <div className="break-all text-xs text-yellow-300">{saveMsg}</div>}
 
       {status === "measuring" && (
         <div className="text-sm text-slate-400">{t("beatMeasuringNote", DURATION)}</div>

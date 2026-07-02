@@ -1,0 +1,18 @@
+# 树莓派后端依赖 (只装纯 web 层)。
+#
+# 重的科学库 (numpy / scipy / opencv / pillow) 和 picamera2 一律走 apt,
+# 因为新版 Raspberry Pi OS 的 Python piwheels 没有预编译 wheel,pip 会从源码
+# 编译 numpy/scipy (极慢甚至卡死)。先跑:
+#
+#   sudo apt install -y python3-picamera2 python3-numpy python3-scipy \
+#                       python3-opencv python3-pil
+#
+# 然后在 --system-site-packages 的 venv 里:  pip install -r requirements-pi.txt
+
+fastapi>=0.110
+uvicorn[standard]>=0.27
+apscheduler>=3.10
+pydantic>=2.0
+tifffile>=2024.1
+websockets>=12.0
+pytest>=8.0

@@ -55,6 +55,19 @@ ipcMain.handle("save-image", async (_e, { dir, name, bytes }) => {
   return filePath;
 });
 
+// 追加一行到 CSV;文件不存在时先写表头
+ipcMain.handle("append-csv", async (_e, { dir, name, header, row }) => {
+  const filePath = path.join(dir, name);
+  let prefix = "";
+  try {
+    await fs.access(filePath);
+  } catch {
+    prefix = header + "\n";
+  }
+  await fs.appendFile(filePath, prefix + row + "\n", "utf8");
+  return filePath;
+});
+
 // ── 生命周期 ──
 
 app.whenReady().then(() => {

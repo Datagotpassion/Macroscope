@@ -10,4 +10,7 @@ contextBridge.exposeInMainWorld("desktop", {
   // 把字节写入 dir/name,返回完整路径
   saveImage: (dir, name, bytes) =>
     ipcRenderer.invoke("save-image", { dir, name, bytes }),
+  // 追加一行到 CSV (文件不存在时先写表头)
+  appendCsv: (dir, name, header, row) =>
+    ipcRenderer.invoke("append-csv", { dir, name, header, row }),
 });

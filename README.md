@@ -57,21 +57,36 @@ pytest
 
 ## 部署到树莓派
 
+> ⚠️ **换相机前务必先关机断电!** 带电插拔 CSI 排线会掉电,曾经因此写坏 SD 卡导致
+> 无法开机。步骤:`sudo shutdown -h now` → 等绿灯停 → 拔电源 → 再动排线。排线本身
+> 也会用旧老化 (出现 "no cameras available" 时先换排线)。
+
+新版 Raspberry Pi OS 的 Python,piwheels 没有 numpy/scipy 的预编译 wheel,`pip`
+会从源码编译 (极慢甚至卡死)。所以**重的科学库走 apt,只有 web 层走 pip**:
+
 ```bash
-# Pi 上安装系统级 picamera2
-sudo apt install -y python3-picamera2
+# 系统级:相机 + numpy/scipy/opencv/pillow (预编译,和相机栈匹配)
+sudo apt install -y python3-picamera2 python3-numpy python3-scipy \
+                    python3-opencv python3-pil python3-full git
 
-# 后端依赖
-cd backend && pip install -r requirements.txt
+# 克隆 + venv (--system-site-packages 让 venv 看得到上面的系统库)
+git clone https://github.com/Datagotpassion/Macroscope.git ~/Macroscope
+cd ~/Macroscope/backend
+python3 -m venv --system-site-packages .venv
+source .venv/bin/activate
+pip install -r requirements-pi.txt          # 只装 fastapi/uvicorn 等纯 web 包
 
-# 构建前端 (在开发机或 Pi 上)
-cd frontend && npm install && npm run build   # 产出 frontend/dist
-
-# 启动 (前端 dist 会被 FastAPI 静态托管)
-cd backend && uvicorn main:app --host 0.0.0.0 --port 8000
+# 开机自启 (systemd)
+sudo cp ~/Macroscope/deploy/platescope.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now platescope
 ```
 
-然后局域网内访问 `http://<树莓派IP>:8000`。
+用桌面 App (`desktop/`) 的话,Pi 不用构建前端 —— App 自带 UI,Pi 只跑后端。
+浏览器访问才需要 `cd frontend && npm install && npm run build`。
+
+**更新已部署的 Pi:** `cd ~/Macroscope && git pull && sudo systemctl restart platescope`。
+从 PC 验证:`curl http://raspberrypi.local:8000/api/status` 应返回 `"camera":"picamera2"`。
 
 ## 数据目录
 

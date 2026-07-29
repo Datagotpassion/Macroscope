@@ -124,6 +124,45 @@ export const cropUrl = (cx, cy, r) =>
 export const frameUrl = (exp, frame) =>
   u(`/api/experiments/${encodeURIComponent(exp)}/frames/${encodeURIComponent(frame)}`);
 
+// ── 运动平台 (CoreXY + Z, 通过 Moonraker) ──
+
+export async function stageStatus() {
+  const r = await fetch(u("/api/stage/status"));
+  return r.json();
+}
+
+async function stagePost(path) {
+  const r = await fetch(u(path), { method: "POST" });
+  if (!r.ok) {
+    let detail = "stage command failed";
+    try {
+      detail = (await r.json()).detail || detail;
+    } catch {
+      /* 非 JSON 错误体忽略 */
+    }
+    throw new Error(detail);
+  }
+  return r.json();
+}
+
+export const stageJog = (axis, distance, feed = 600) =>
+  stagePost(`/api/stage/jog?axis=${axis}&distance=${distance}&feed=${feed}`);
+
+export function stageMove({ x, y, z, feed = 1200 }) {
+  const p = new URLSearchParams();
+  if (x != null) p.set("x", x);
+  if (y != null) p.set("y", y);
+  if (z != null) p.set("z", z);
+  p.set("feed", feed);
+  return stagePost(`/api/stage/move?${p.toString()}`);
+}
+
+export const stageHome = (axes = "XYZ") =>
+  stagePost(`/api/stage/home?axes=${axes}`);
+export const stageStop = () => stagePost("/api/stage/stop");
+export const stageFirmwareRestart = () =>
+  stagePost("/api/stage/firmware_restart");
+
 // WebSocket 预览
 export function openPreview(onFrame) {
   const base = apiBase();

@@ -5,6 +5,7 @@ import InspectSnapshot from "./InspectSnapshot";
 import BeatDetect from "./BeatDetect";
 import TimelapseControl from "./TimelapseControl";
 import LocalSave from "./LocalSave";
+import StageControl from "./StageControl";
 import Settings from "./Settings";
 import { useI18n } from "./i18n.jsx";
 import { capture, getStatus, openPreview, plateImageUrl } from "./api";
@@ -326,6 +327,7 @@ export default function App() {
             setAutoSave={setAutoSave}
             registerSaver={registerSaver}
           />
+          <StageControl />
           <TimelapseControl
             jobs={status?.jobs ?? []}
             onChange={refreshStatus}

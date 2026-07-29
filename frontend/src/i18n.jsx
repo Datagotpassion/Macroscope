@@ -89,6 +89,20 @@ const translations = {
     gridCols: "列",
     gridHint: "先拖粉色 A1 / A12 / H1 摆好整体网格 (拖内部可整体平移);再拖单个孔微调位置、拖孔右边缘小点改大小。",
 
+    stageTitle: "运动平台",
+    stageOffline: "未连接",
+    stageOfflineHint: "未连接到 Moonraker (检查 Klipper 是否运行、地址是否可达)。",
+    stageStep: "步进",
+    stageFocus: "对焦",
+    stageHomed: "已回零",
+    stageNotHomed: "未回零",
+    stageHomeAll: "回零 全部",
+    stageHomeXY: "回零 XY",
+    stageHomeZ: "回零 Z",
+    stageEstop: "急停",
+    stageRestart: "复位固件",
+    stageHomeHint: "尚未回零 —— 未回零时 Klipper 会拒绝坐标移动。先点回零 (或急停后复位固件)。",
+
     switchTo: "English",
   },
   en: {
@@ -179,6 +193,22 @@ const translations = {
     gridCols: "Cols",
     gridHint:
       "First drag the pink A1 / A12 / H1 to place the whole grid (drag inside to move it all); then drag individual wells to reposition, and the dot on a well's right edge to resize.",
+
+    stageTitle: "Motion Stage",
+    stageOffline: "Offline",
+    stageOfflineHint:
+      "Not connected to Moonraker (check Klipper is running and the host is reachable).",
+    stageStep: "Step",
+    stageFocus: "focus",
+    stageHomed: "Homed",
+    stageNotHomed: "Not homed",
+    stageHomeAll: "Home All",
+    stageHomeXY: "Home XY",
+    stageHomeZ: "Home Z",
+    stageEstop: "E-STOP",
+    stageRestart: "Restart FW",
+    stageHomeHint:
+      "Not homed yet — Klipper refuses coordinated moves until homed. Click Home first (or Restart FW after an E-stop).",
 
     switchTo: "中文",
   },

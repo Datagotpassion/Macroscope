@@ -23,6 +23,7 @@ from camera import CameraController, _log
 from image_store import ImageStore
 from plate_detector import PlateDetector
 from scheduler import Scheduler
+from stage import StageController, StageError
 
 app = FastAPI(title="PlateScope")
 
@@ -38,6 +39,7 @@ camera = CameraController()
 detector = PlateDetector()
 store = ImageStore()
 scheduler = Scheduler(camera, store)
+stage = StageController()
 
 # 实时预览参数。PREVIEW_FPS 设得很高 = 实际不限速,跑多快取决于相机/编码/网络。
 PREVIEW_FPS = 120
@@ -261,6 +263,70 @@ async def get_frame(name: str, frame: str):
     if not path:
         raise HTTPException(404, "帧不存在")
     return FileResponse(str(path), media_type="image/jpeg")
+
+
+# ── 运动平台 (CoreXY + Z, 通过 Moonraker/Klipper) ──
+
+
+@app.get("/api/stage/status")
+async def stage_status():
+    """平台连接状态 + 当前坐标 + 已 home 轴。Moonraker 不可达时 connected=False。"""
+    return await asyncio.to_thread(stage.status)
+
+
+@app.post("/api/stage/jog")
+async def stage_jog(axis: str, distance: float, feed: float = 600):
+    """手动步进单轴 (相对移动)。未 home 时 Klipper 会拒绝并返回提示。"""
+    try:
+        await asyncio.to_thread(stage.jog, axis, distance, feed)
+    except StageError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+@app.post("/api/stage/move")
+async def stage_move(
+    x: float | None = None,
+    y: float | None = None,
+    z: float | None = None,
+    feed: float = 1200,
+):
+    """绝对移动到坐标 (只给要动的轴)。"""
+    try:
+        await asyncio.to_thread(stage.move, x, y, z, feed)
+    except StageError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+@app.post("/api/stage/home")
+async def stage_home(axes: str = "XYZ"):
+    """回零。sensorless XY homing 由 printer.cfg 配置。"""
+    try:
+        await asyncio.to_thread(stage.home, axes)
+    except StageError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+@app.post("/api/stage/stop")
+async def stage_stop():
+    """急停 (需之后 firmware_restart 恢复)。"""
+    try:
+        await asyncio.to_thread(stage.stop)
+    except StageError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+@app.post("/api/stage/firmware_restart")
+async def stage_firmware_restart():
+    """急停/报错后重启 Klipper 固件,恢复 Ready。"""
+    try:
+        await asyncio.to_thread(stage.firmware_restart)
+    except StageError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
 
 
 # ── WebSocket 实时预览 (F2) ──

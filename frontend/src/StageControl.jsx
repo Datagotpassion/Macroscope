@@ -3,21 +3,41 @@ import { useI18n } from "./i18n.jsx";
 import {
   stageStatus,
   stageJog,
+  stageMove,
   stageHome,
   stageStop,
   stageFirmwareRestart,
 } from "./api";
 
 const STEPS = [0.1, 1, 5, 10, 25];
+const POS_KEY = "platescope_stage_positions_v1";
 
-// 运动平台手动控制:连接状态 + 坐标读数 + XY/Z 步进 + 回零 + 急停。
-// CoreXY 移动相机,Z 移动板 (对焦)。未 home 时 Klipper 会拒绝步进,错误会显示出来。
+function loadPositions() {
+  try {
+    return JSON.parse(localStorage.getItem(POS_KEY)) || [];
+  } catch {
+    return [];
+  }
+}
+
+// 运动平台手动控制:连接/坐标 + XY/Z 步进 + 绝对前往 + 已存位置(示教) + 回零 + 急停。
+// CoreXY 移动相机,Z 移动板(对焦)。未 home 时 Klipper 会拒绝坐标移动,错误会显示出来。
+// 已存位置只记录 XY(相机在板上的位置),是后续「逐孔扫描」的孔位表基础。
 export default function StageControl() {
   const { t } = useI18n();
   const [st, setSt] = React.useState(null);
   const [step, setStep] = React.useState(1);
   const [busy, setBusy] = React.useState(false);
   const [err, setErr] = React.useState(null);
+
+  const [gotoX, setGotoX] = React.useState("");
+  const [gotoY, setGotoY] = React.useState("");
+  const [positions, setPositions] = React.useState(loadPositions);
+  const [newName, setNewName] = React.useState("");
+
+  React.useEffect(() => {
+    localStorage.setItem(POS_KEY, JSON.stringify(positions));
+  }, [positions]);
 
   const refresh = React.useCallback(async () => {
     try {
@@ -46,12 +66,35 @@ export default function StageControl() {
     }
   };
 
-  const jog = (axis, dir) => run(() => stageJog(axis, dir * step, axis === "Z" ? 300 : 600));
+  const jog = (axis, dir) =>
+    run(() => stageJog(axis, dir * step, axis === "Z" ? 300 : 600));
 
   const connected = st?.connected;
   const pos = st?.position;
   const homed = (st?.homed || "").toLowerCase();
   const isHomed = (a) => homed.includes(a);
+  const xyHomed = isHomed("x") && isHomed("y");
+
+  const goTo = () => {
+    const x = gotoX === "" ? undefined : Number(gotoX);
+    const y = gotoY === "" ? undefined : Number(gotoY);
+    if (x === undefined && y === undefined) return;
+    return run(() => stageMove({ x, y, feed: 3000 }));
+  };
+
+  const savePosition = () => {
+    if (!pos) return;
+    const name = newName.trim() || `P${positions.length + 1}`;
+    setPositions((ps) => [
+      ...ps.filter((p) => p.name !== name),
+      { name, x: pos.x, y: pos.y },
+    ]);
+    setNewName("");
+  };
+
+  const recall = (p) => run(() => stageMove({ x: p.x, y: p.y, feed: 3000 }));
+  const remove = (name) =>
+    setPositions((ps) => ps.filter((p) => p.name !== name));
 
   return (
     <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-3">
@@ -80,15 +123,11 @@ export default function StageControl() {
             {["x", "y", "z"].map((a) => (
               <div
                 key={a}
-                className={`rounded bg-slate-800 py-1 ${
-                  isHomed(a) ? "" : "opacity-50"
-                }`}
+                className={`rounded bg-slate-800 py-1 ${isHomed(a) ? "" : "opacity-50"}`}
                 title={isHomed(a) ? t("stageHomed") : t("stageNotHomed")}
               >
                 <div className="text-[10px] uppercase text-slate-400">{a}</div>
-                <div className="font-mono">
-                  {pos ? pos[a].toFixed(2) : "—"}
-                </div>
+                <div className="font-mono">{pos ? pos[a].toFixed(2) : "—"}</div>
               </div>
             ))}
           </div>
@@ -139,6 +178,86 @@ export default function StageControl() {
             </div>
           </div>
 
+          {/* 绝对前往 (需先 home) */}
+          <div className="mt-3">
+            <div className="mb-1 text-[10px] uppercase text-slate-500">
+              {t("stageGoto")}
+            </div>
+            <div className="flex items-center gap-1 text-xs">
+              <input
+                type="number"
+                placeholder="X"
+                value={gotoX}
+                onChange={(e) => setGotoX(e.target.value)}
+                className="w-16 rounded bg-slate-800 px-2 py-1"
+              />
+              <input
+                type="number"
+                placeholder="Y"
+                value={gotoY}
+                onChange={(e) => setGotoY(e.target.value)}
+                className="w-16 rounded bg-slate-800 px-2 py-1"
+              />
+              <button
+                onClick={goTo}
+                disabled={busy || !xyHomed}
+                className="rounded bg-cyan-700 px-3 py-1 font-medium hover:bg-cyan-600 disabled:opacity-40"
+              >
+                {t("stageGo")}
+              </button>
+            </div>
+          </div>
+
+          {/* 已存位置 (示教 → 孔位表基础) */}
+          <div className="mt-3">
+            <div className="mb-1 text-[10px] uppercase text-slate-500">
+              {t("stageSavedPos")}
+            </div>
+            <div className="mb-1 flex items-center gap-1 text-xs">
+              <input
+                type="text"
+                placeholder={t("stagePosName")}
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                className="min-w-0 flex-1 rounded bg-slate-800 px-2 py-1"
+              />
+              <button
+                onClick={savePosition}
+                disabled={busy || !pos}
+                className="rounded bg-slate-700 px-2 py-1 hover:bg-slate-600 disabled:opacity-40"
+              >
+                {t("stageSaveCurrent")}
+              </button>
+            </div>
+            {positions.length === 0 ? (
+              <p className="text-[11px] text-slate-600">{t("stageNoSaved")}</p>
+            ) : (
+              <div className="max-h-32 space-y-0.5 overflow-y-auto">
+                {positions.map((p) => (
+                  <div key={p.name} className="flex items-center gap-1 text-xs">
+                    <button
+                      onClick={() => recall(p)}
+                      disabled={busy || !xyHomed}
+                      title={`X${p.x.toFixed(1)} Y${p.y.toFixed(1)}`}
+                      className="flex-1 truncate rounded bg-slate-800 px-2 py-1 text-left hover:bg-cyan-800 disabled:opacity-40"
+                    >
+                      {p.name}
+                      <span className="ml-1 font-mono text-[10px] text-slate-400">
+                        {p.x.toFixed(0)},{p.y.toFixed(0)}
+                      </span>
+                    </button>
+                    <button
+                      onClick={() => remove(p.name)}
+                      className="rounded bg-slate-700 px-1.5 py-1 text-slate-400 hover:bg-red-800 hover:text-white"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           {/* 回零 */}
           <div className="mt-3 flex flex-wrap gap-1 text-xs">
             <button
@@ -181,7 +300,7 @@ export default function StageControl() {
             </button>
           </div>
 
-          {!homed && (
+          {!xyHomed && (
             <p className="mt-2 text-[11px] text-amber-400/80">{t("stageHomeHint")}</p>
           )}
           {err && <p className="mt-2 text-[11px] text-red-400">{err}</p>}

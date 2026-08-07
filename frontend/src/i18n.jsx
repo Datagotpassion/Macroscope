@@ -102,6 +102,12 @@ const translations = {
     stageEstop: "急停",
     stageRestart: "复位固件",
     stageHomeHint: "尚未回零 —— 未回零时 Klipper 会拒绝坐标移动。先点回零 (或急停后复位固件)。",
+    stageGoto: "前往坐标 (mm)",
+    stageGo: "前往",
+    stageSavedPos: "已存位置 (示教)",
+    stageSaveCurrent: "存当前",
+    stagePosName: "位置名",
+    stageNoSaved: "暂无已存位置 —— 移到某处后「存当前」记录 XY",
 
     switchTo: "English",
   },
@@ -209,6 +215,12 @@ const translations = {
     stageRestart: "Restart FW",
     stageHomeHint:
       "Not homed yet — Klipper refuses coordinated moves until homed. Click Home first (or Restart FW after an E-stop).",
+    stageGoto: "Go to (mm)",
+    stageGo: "Go",
+    stageSavedPos: "Saved positions (teach)",
+    stageSaveCurrent: "Save current",
+    stagePosName: "name",
+    stageNoSaved: "No saved positions — move somewhere, then \"Save current\" to record its XY",
 
     switchTo: "中文",
   },

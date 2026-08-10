@@ -18,7 +18,12 @@ export function apiBase() {
 }
 
 export function setApiBase(url) {
-  localStorage.setItem("platescope_api_base", (url || "").replace(/\/+$/, ""));
+  const clean = (url || "").replace(/\/+$/, "");
+  localStorage.setItem("platescope_api_base", clean);
+  // 桌面 App:同时持久化到主进程,重启后自动用同一地址(不依赖 localStorage 存活)
+  if (typeof window !== "undefined" && window.desktop && window.desktop.setApiBase) {
+    window.desktop.setApiBase(clean);
+  }
 }
 
 export function isDesktop() {

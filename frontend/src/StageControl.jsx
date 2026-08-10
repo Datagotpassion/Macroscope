@@ -11,6 +11,8 @@ import {
 
 const STEPS = [0.1, 1, 5, 10, 25];
 const POS_KEY = "platescope_stage_positions_v1";
+// 当 Klipper 掉线(shutdown/error)时,自动重连的最小间隔 (ms),避免频繁重启。
+const RECONNECT_COOLDOWN = 6000;
 
 function loadPositions() {
   try {
@@ -28,7 +30,17 @@ export default function StageControl() {
   const [st, setSt] = React.useState(null);
   const [step, setStep] = React.useState(1);
   const [busy, setBusy] = React.useState(false);
+  const busyRef = React.useRef(false);
   const [err, setErr] = React.useState(null);
+  const [reconnecting, setReconnecting] = React.useState(false);
+  const lastReconnectRef = React.useRef(0);
+  // 用户主动急停后暂停自动重连,避免把 E-STOP 又自动恢复掉;点「复位固件」重新启用。
+  const [autoPaused, setAutoPaused] = React.useState(false);
+  const autoPausedRef = React.useRef(false);
+  const pauseAuto = (v) => {
+    autoPausedRef.current = v;
+    setAutoPaused(v);
+  };
 
   const [gotoX, setGotoX] = React.useState("");
   const [gotoY, setGotoY] = React.useState("");
@@ -40,10 +52,33 @@ export default function StageControl() {
   }, [positions]);
 
   const refresh = React.useCallback(async () => {
+    let status;
     try {
-      setSt(await stageStatus());
+      status = await stageStatus();
     } catch {
-      setSt({ connected: false });
+      status = { connected: false };
+    }
+    setSt(status);
+
+    // 自动重连 Klipper:Moonraker 在线但 Klipper 处于 shutdown/error
+    //(例如 Pico 短暂掉电/断开又回来),自动发一次 firmware_restart 把它拉回来。
+    // 限速,避免不停重启;Moonraker 都不可达时无能为力,继续轮询即可。
+    const klipperDown =
+      status?.connected &&
+      (status.state === "shutdown" || status.state === "error");
+    if (klipperDown && !busyRef.current && !autoPausedRef.current) {
+      const now = Date.now();
+      if (now - lastReconnectRef.current > RECONNECT_COOLDOWN) {
+        lastReconnectRef.current = now;
+        setReconnecting(true);
+        try {
+          await stageFirmwareRestart();
+        } catch {
+          /* 还没好,下个周期再试 */
+        } finally {
+          setTimeout(() => setReconnecting(false), 2500);
+        }
+      }
     }
   }, []);
 
@@ -54,6 +89,7 @@ export default function StageControl() {
   }, [refresh]);
 
   const run = async (fn) => {
+    busyRef.current = true;
     setBusy(true);
     setErr(null);
     try {
@@ -62,18 +98,24 @@ export default function StageControl() {
     } catch (e) {
       setErr(e.message || String(e));
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   };
 
+  // XY jog ~40 mm/s (snappy); Z gentler (~10 mm/s) since it's plate/focus.
   const jog = (axis, dir) =>
-    run(() => stageJog(axis, dir * step, axis === "Z" ? 300 : 600));
+    run(() => stageJog(axis, dir * step, axis === "Z" ? 600 : 2400));
 
   const connected = st?.connected;
   const pos = st?.position;
   const homed = (st?.homed || "").toLowerCase();
   const isHomed = (a) => homed.includes(a);
   const xyHomed = isHomed("x") && isHomed("y");
+  // Klipper 掉线中(正在自动重连);Moonraker 在线但 Klipper shutdown/error
+  const showReconnecting =
+    !autoPaused &&
+    (reconnecting || (connected && (st?.state === "shutdown" || st?.state === "error")));
 
   const goTo = () => {
     const x = gotoX === "" ? undefined : Number(gotoX);
@@ -102,15 +144,27 @@ export default function StageControl() {
         <h3 className="font-semibold">{t("stageTitle")}</h3>
         <span
           className={`flex items-center gap-1 text-xs ${
-            connected ? "text-emerald-400" : "text-slate-500"
+            showReconnecting
+              ? "text-amber-400"
+              : connected
+              ? "text-emerald-400"
+              : "text-slate-500"
           }`}
         >
           <span
             className={`inline-block h-2 w-2 rounded-full ${
-              connected ? "bg-emerald-400" : "bg-slate-600"
+              showReconnecting
+                ? "animate-pulse bg-amber-400"
+                : connected
+                ? "bg-emerald-400"
+                : "bg-slate-600"
             }`}
           />
-          {connected ? st?.state || t("connected") : t("stageOffline")}
+          {showReconnecting
+            ? t("stageReconnecting")
+            : connected
+            ? st?.state || t("connected")
+            : t("stageOffline")}
         </span>
       </div>
 
@@ -286,13 +340,19 @@ export default function StageControl() {
           {/* 急停 / 复位 */}
           <div className="mt-2 flex gap-1 text-xs">
             <button
-              onClick={() => run(stageStop)}
+              onClick={() => {
+                pauseAuto(true); // 主动急停:别再自动重连
+                run(stageStop);
+              }}
               className="flex-1 rounded bg-red-700 px-2 py-1 font-medium hover:bg-red-600"
             >
               {t("stageEstop")}
             </button>
             <button
-              onClick={() => run(stageFirmwareRestart)}
+              onClick={() => {
+                pauseAuto(false); // 手动复位:重新启用自动重连
+                run(stageFirmwareRestart);
+              }}
               disabled={busy}
               className="rounded bg-slate-700 px-2 py-1 hover:bg-slate-600 disabled:opacity-50"
             >

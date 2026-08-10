@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import math
+import os
 import sys
 import threading
 import time
@@ -40,6 +41,15 @@ except ImportError:  # pragma: no cover - cv2 缺失时给出清晰报错
 FULL_SIZE = (4056, 3040)
 PREVIEW_SIZE = (1014, 760)  # 1/4 分辨率,降低串流带宽
 
+# 静帧输出分辨率。默认 2028x1520 —— IMX477 的「全视场 binned」模式:数据率约为
+# 全分辨率 4056x3040 (12MP) 的一半。在信号裕度不足的排线上,12MP 会 "Camera
+# frontend has timed out",而 2028x1520 (3MP) 能稳定串流,且足够分辨 16 孔。
+# 好硬件 (短排线 / Pi4+) 想要 12MP 时用环境变量覆盖:PLATESCOPE_STILL_W/H=4056/3040。
+STILL_SIZE = (
+    int(os.environ.get("PLATESCOPE_STILL_W", 2028)),
+    int(os.environ.get("PLATESCOPE_STILL_H", 1520)),
+)
+
 # 单孔 ROI 相对孔大小的倍数。1.0 = ROI 恰好等于孔 (跳动检测测试用);
 # 之前是 1.6 (带余量便于检视取景)。改这一个值即可还原。
 ROI_PADDING = 1.0
@@ -65,8 +75,11 @@ class PiCameraBackend(_Backend):
         from picamera2 import Picamera2  # 延迟导入,开发机上没有也不报错
 
         self._cam = Picamera2()
+        # 静帧也用 binned 传感器模式 (raw=STILL_SIZE):带宽减半,临界排线也能串流;
+        # 顺带让静帧与预览共用同一视场,网格/裁剪/跳动检测坐标天然一致。
         self._still_cfg = self._cam.create_still_configuration(
-            main={"size": FULL_SIZE, "format": "RGB888"}
+            main={"size": STILL_SIZE, "format": "RGB888"},
+            raw={"size": STILL_SIZE},
         )
         # raw 用全视场 binned 模式 (2028x1520),强制预览的视场 = 全分辨率静帧的视场。
         # 否则 picamera2 会自动选 1332x990 中心裁剪模式,导致预览和静帧视场不一致 ——

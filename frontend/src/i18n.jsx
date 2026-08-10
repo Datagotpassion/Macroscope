@@ -91,6 +91,7 @@ const translations = {
 
     stageTitle: "运动平台",
     stageOffline: "未连接",
+    stageReconnecting: "重连中…",
     stageOfflineHint: "未连接到 Moonraker (检查 Klipper 是否运行、地址是否可达)。",
     stageStep: "步进",
     stageFocus: "对焦",
@@ -202,6 +203,7 @@ const translations = {
 
     stageTitle: "Motion Stage",
     stageOffline: "Offline",
+    stageReconnecting: "Reconnecting…",
     stageOfflineHint:
       "Not connected to Moonraker (check Klipper is running and the host is reachable).",
     stageStep: "Step",

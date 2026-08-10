@@ -43,6 +43,15 @@ export default function App() {
     saveGrid(grid);
   }, [grid]);
 
+  // 桌面 App:启动时把已保存的连接地址同步到主进程,确保重启后主进程也记得,
+  // 配合各面板的持续轮询即可自动重连(无需手动点「连接」)。
+  React.useEffect(() => {
+    if (typeof window !== "undefined" && window.desktop && window.desktop.setApiBase) {
+      const saved = localStorage.getItem("platescope_api_base");
+      if (saved) window.desktop.setApiBase(saved);
+    }
+  }, []);
+
   // LocalSave 把它的 saveNow 交给这里,拍摄后可自动保存
   const saverRef = React.useRef(null);
   const registerSaver = React.useCallback((fn) => {

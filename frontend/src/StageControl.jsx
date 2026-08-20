@@ -7,6 +7,7 @@ import {
   stageHome,
   stageStop,
   stageFirmwareRestart,
+  stageAutofocus,
 } from "./api";
 
 const STEPS = [0.1, 1, 5, 10, 25];
@@ -138,6 +139,21 @@ export default function StageControl() {
   const remove = (name) =>
     setPositions((ps) => ps.filter((p) => p.name !== name));
 
+  // 自动对焦:Z 小步扫描找清晰度峰值(需 Z 已 home + 相机在线)。
+  const [afResult, setAfResult] = React.useState(null);
+  const [afRunning, setAfRunning] = React.useState(false);
+  const runAutofocus = () => {
+    setAfResult(null);
+    setAfRunning(true);
+    return run(async () => {
+      try {
+        setAfResult(await stageAutofocus({ z_range: 1.0, step: 0.1 }));
+      } finally {
+        setAfRunning(false);
+      }
+    });
+  };
+
   return (
     <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-3">
       <div className="mb-2 flex items-center justify-between">
@@ -168,10 +184,11 @@ export default function StageControl() {
         </span>
       </div>
 
-      {!connected ? (
-        <p className="text-xs text-slate-500">{t("stageOfflineHint")}</p>
-      ) : (
-        <>
+      {!connected && (
+        <p className="mb-2 text-[11px] text-amber-400/80">{t("stageOfflineHint")}</p>
+      )}
+      {/* 面板常驻:离线时不隐藏,只是禁用控件,布局稳定 */}
+      <div>
           {/* 坐标读数 */}
           <div className="mb-3 grid grid-cols-3 gap-2 text-center text-sm">
             {["x", "y", "z"].map((a) => (
@@ -209,13 +226,13 @@ export default function StageControl() {
               <div className="mb-1 text-center text-[10px] text-slate-500">XY</div>
               <div className="grid grid-cols-3 gap-1">
                 <span />
-                <JogBtn label="Y+" onClick={() => jog("Y", 1)} disabled={busy} />
+                <JogBtn label="Y+" onClick={() => jog("Y", 1)} disabled={busy || !connected} />
                 <span />
-                <JogBtn label="X−" onClick={() => jog("X", -1)} disabled={busy} />
+                <JogBtn label="X−" onClick={() => jog("X", -1)} disabled={busy || !connected} />
                 <span />
-                <JogBtn label="X+" onClick={() => jog("X", 1)} disabled={busy} />
+                <JogBtn label="X+" onClick={() => jog("X", 1)} disabled={busy || !connected} />
                 <span />
-                <JogBtn label="Y−" onClick={() => jog("Y", -1)} disabled={busy} />
+                <JogBtn label="Y−" onClick={() => jog("Y", -1)} disabled={busy || !connected} />
                 <span />
               </div>
             </div>
@@ -226,10 +243,27 @@ export default function StageControl() {
                 Z · {t("stageFocus")}
               </div>
               <div className="flex flex-col gap-1">
-                <JogBtn label="Z+" onClick={() => jog("Z", 1)} disabled={busy} />
-                <JogBtn label="Z−" onClick={() => jog("Z", -1)} disabled={busy} />
+                <JogBtn label="Z+" onClick={() => jog("Z", 1)} disabled={busy || !connected} />
+                <JogBtn label="Z−" onClick={() => jog("Z", -1)} disabled={busy || !connected} />
               </div>
             </div>
+          </div>
+
+          {/* 自动对焦 (Z 小步扫描找清晰度峰值) */}
+          <div className="mt-3 flex items-center gap-2 text-xs">
+            <button
+              onClick={runAutofocus}
+              disabled={busy || !connected || !isHomed("z")}
+              title={t("stageAfHint")}
+              className="rounded bg-cyan-800 px-3 py-1 font-medium hover:bg-cyan-700 disabled:opacity-40"
+            >
+              {afRunning ? t("stageAfRunning") : t("stageAutofocus")}
+            </button>
+            {afResult && afResult.best_z != null && (
+              <span className="text-emerald-400">
+                {t("stageAfResult", afResult.best_z)}
+              </span>
+            )}
           </div>
 
           {/* 绝对前往 (需先 home) */}
@@ -316,21 +350,21 @@ export default function StageControl() {
           <div className="mt-3 flex flex-wrap gap-1 text-xs">
             <button
               onClick={() => run(() => stageHome("XYZ"))}
-              disabled={busy}
+              disabled={busy || !connected}
               className="rounded bg-slate-700 px-2 py-1 hover:bg-slate-600 disabled:opacity-50"
             >
               {t("stageHomeAll")}
             </button>
             <button
               onClick={() => run(() => stageHome("XY"))}
-              disabled={busy}
+              disabled={busy || !connected}
               className="rounded bg-slate-700 px-2 py-1 hover:bg-slate-600 disabled:opacity-50"
             >
               {t("stageHomeXY")}
             </button>
             <button
               onClick={() => run(() => stageHome("Z"))}
-              disabled={busy}
+              disabled={busy || !connected}
               className="rounded bg-slate-700 px-2 py-1 hover:bg-slate-600 disabled:opacity-50"
             >
               {t("stageHomeZ")}
@@ -344,7 +378,8 @@ export default function StageControl() {
                 pauseAuto(true); // 主动急停:别再自动重连
                 run(stageStop);
               }}
-              className="flex-1 rounded bg-red-700 px-2 py-1 font-medium hover:bg-red-600"
+              disabled={!connected}
+              className="flex-1 rounded bg-red-700 px-2 py-1 font-medium hover:bg-red-600 disabled:opacity-50"
             >
               {t("stageEstop")}
             </button>
@@ -353,7 +388,7 @@ export default function StageControl() {
                 pauseAuto(false); // 手动复位:重新启用自动重连
                 run(stageFirmwareRestart);
               }}
-              disabled={busy}
+              disabled={busy || !connected}
               className="rounded bg-slate-700 px-2 py-1 hover:bg-slate-600 disabled:opacity-50"
             >
               {t("stageRestart")}
@@ -364,8 +399,7 @@ export default function StageControl() {
             <p className="mt-2 text-[11px] text-amber-400/80">{t("stageHomeHint")}</p>
           )}
           {err && <p className="mt-2 text-[11px] text-red-400">{err}</p>}
-        </>
-      )}
+      </div>
     </div>
   );
 }

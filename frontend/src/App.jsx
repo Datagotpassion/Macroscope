@@ -100,29 +100,80 @@ export default function App() {
     if (g) setGrid(g);
   };
 
-  // 实时预览开关 (F2) + 客户端实测帧率
+  // 实时预览 (F2):帧率 + 断线自动重连 + 卡顿看门狗。
+  // 相机在移动时可能掉线,或 socket 还开着但不再出帧(frontend timeout)——
+  // 两种情况都自动重连,不用手动关开预览。
   const [previewFps, setPreviewFps] = React.useState(0);
+  const [previewReconnecting, setPreviewReconnecting] = React.useState(false);
   const fpsCountRef = React.useRef(0);
+  const lastFrameRef = React.useRef(0);
   React.useEffect(() => {
     if (!livePreview) {
       setPreviewFps(0);
+      setPreviewReconnecting(false);
       return;
     }
-    fpsCountRef.current = 0;
-    const ws = openPreview((url) => {
-      fpsCountRef.current += 1;
-      setPreviewUrl((prev) => {
-        if (prev) URL.revokeObjectURL(prev);
-        return url;
-      });
-    });
+    let ws = null;
+    let cancelled = false;
+    let reconnectTimer = null;
+    let reconnectPending = false;
+
+    const scheduleReconnect = () => {
+      if (cancelled || reconnectPending) return;
+      reconnectPending = true;
+      setPreviewReconnecting(true);
+      setPreviewFps(0);
+      reconnectTimer = setTimeout(() => {
+        reconnectPending = false;
+        connect();
+      }, 1500);
+    };
+
+    const connect = () => {
+      if (cancelled) return;
+      if (ws) {
+        ws.onclose = null; // 旧 socket 不再触发重连
+        try { ws.close(); } catch { /* ignore */ }
+      }
+      fpsCountRef.current = 0;
+      lastFrameRef.current = Date.now();
+      ws = openPreview(
+        (url) => {
+          if (cancelled) {
+            URL.revokeObjectURL(url);
+            return;
+          }
+          setPreviewReconnecting(false);
+          lastFrameRef.current = Date.now();
+          fpsCountRef.current += 1;
+          setPreviewUrl((prev) => {
+            if (prev) URL.revokeObjectURL(prev);
+            return url;
+          });
+        },
+        scheduleReconnect // onclose/出错 -> 稍后重连
+      );
+    };
+
+    connect();
+
     const timer = setInterval(() => {
       setPreviewFps(Math.round(fpsCountRef.current / 2));
       fpsCountRef.current = 0;
+      // 看门狗:socket 还开着但 >5s 没帧(相机卡死)-> 关掉触发重连
+      if (!cancelled && !reconnectPending && Date.now() - lastFrameRef.current > 5000) {
+        try { ws && ws.close(); } catch { /* ignore */ } // -> onclose -> scheduleReconnect
+      }
     }, 2000);
+
     return () => {
-      ws.close();
+      cancelled = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       clearInterval(timer);
+      if (ws) {
+        ws.onclose = null;
+        try { ws.close(); } catch { /* ignore */ }
+      }
     };
   }, [livePreview]);
 
@@ -270,11 +321,15 @@ export default function App() {
             <div className="space-y-2">
               <div className="flex items-center gap-2 text-sm text-slate-400">
                 <span>{t("previewHeader")}</span>
-                {previewFps > 0 && (
+                {previewReconnecting ? (
+                  <span className="animate-pulse rounded bg-amber-700/60 px-1.5 py-0.5 text-xs text-amber-200">
+                    {t("previewReconnecting")}
+                  </span>
+                ) : previewFps > 0 ? (
                   <span className="rounded bg-slate-700 px-1.5 py-0.5 text-xs text-slate-300">
                     {previewFps} fps
                   </span>
-                )}
+                ) : null}
               </div>
               {previewUrl ? (
                 <div className="relative">

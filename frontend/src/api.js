@@ -168,8 +168,17 @@ export const stageStop = () => stagePost("/api/stage/stop");
 export const stageFirmwareRestart = () =>
   stagePost("/api/stage/firmware_restart");
 
-// WebSocket 预览
-export function openPreview(onFrame) {
+// 自动对焦:以当前 Z 为中心 ±z_range 小步扫描找清晰度峰值,返回 {best_z, curve}
+export function stageAutofocus({ z_range = 1.0, step = 0.1, feed = 120, cx, cy, r } = {}) {
+  const p = new URLSearchParams({ z_range, step, feed });
+  if (cx != null) p.set("cx", cx);
+  if (cy != null) p.set("cy", cy);
+  if (r != null) p.set("r", r);
+  return stagePost(`/api/autofocus?${p.toString()}`);
+}
+
+// WebSocket 预览。onClose 可选:socket 断开/出错时回调,供上层自动重连。
+export function openPreview(onFrame, onClose) {
   const base = apiBase();
   let wsUrl;
   if (base) {
@@ -181,5 +190,6 @@ export function openPreview(onFrame) {
   const ws = new WebSocket(wsUrl);
   ws.binaryType = "blob";
   ws.onmessage = (ev) => onFrame(URL.createObjectURL(ev.data));
+  if (onClose) ws.onclose = onClose;
   return ws;
 }

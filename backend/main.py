@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+import autofocus
 import beat
 from camera import CameraController, _log
 from image_store import ImageStore
@@ -327,6 +328,62 @@ async def stage_firmware_restart():
     except StageError as e:
         raise HTTPException(400, str(e))
     return {"ok": True}
+
+
+@app.post("/api/autofocus")
+async def run_autofocus(
+    z_range: float = 1.0,
+    step: float = 0.1,
+    feed: float = 120,
+    settle: float = 0.2,
+    cx: float | None = None,
+    cy: float | None = None,
+    r: float | None = None,
+):
+    """自动对焦:以当前 Z 为中心 ±z_range 小步扫描,取清晰度峰值并移到该 Z。
+
+    需要平台在线且 Z 已 home (用 G1 绝对移动,越界会被 Klipper 拒绝 —— 板不会
+    撞镜头)。给 cx,cy,r 则只对该孔区域对焦。相机为 mock 时仍会跑完流程,只是
+    找不到真实焦点。
+    """
+    st = await asyncio.to_thread(stage.status)
+    if not st.get("connected"):
+        raise HTTPException(400, "运动平台离线")
+    if "z" not in (st.get("homed") or "").lower():
+        raise HTTPException(400, "Z 轴未回零,请先 Home Z")
+    z0 = float((st.get("position") or {}).get("z", 0.0))
+    amin = (st.get("axis_minimum") or [None, None, None])[2]
+    amax = (st.get("axis_maximum") or [None, None, None])[2]
+    zs = autofocus.sweep_positions(z0, z_range, step, amin, amax)
+
+    def _measure(z: float) -> float:
+        stage.move(z=z, feed=feed)
+        stage.wait_moves()
+        if settle > 0:
+            time.sleep(settle)
+        frame = camera.capture_array(preview=True)
+        return autofocus.sharpness(autofocus.to_gray(frame, cx, cy, r))
+
+    curve: list[dict] = []
+    for z in zs:
+        try:
+            s = await asyncio.to_thread(_measure, z)
+        except StageError as e:
+            raise HTTPException(400, f"Z 移动失败: {e}")
+        curve.append({"z": z, "sharp": round(s, 2)})
+
+    best = autofocus.best_z(curve)
+    if best is not None:
+        try:
+            await asyncio.to_thread(stage.move, None, None, best["z"], feed)
+            await asyncio.to_thread(stage.wait_moves)
+        except StageError as e:
+            raise HTTPException(400, f"移回焦点失败: {e}")
+    _log(
+        f"[autofocus] n={len(curve)} best_z={best and best['z']} "
+        f"z0={z0:.2f} step={step} mock={camera.is_mock}"
+    )
+    return {"best_z": best and best["z"], "curve": curve, "z0": z0}
 
 
 # ── WebSocket 实时预览 (F2) ──

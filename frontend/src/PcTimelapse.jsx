@@ -23,6 +23,9 @@ function buildName(condition, dayNum, d = new Date()) {
   return raw.replace(/[<>:"/\\|?*\n\r]/g, "").trim() + ".jpg";
 }
 
+// 运行状态持久化 key —— 意外关闭 (App 崩溃 / 手滑关掉 / PC 重启) 后自动从原起点续拍。
+const TL_KEY = "platescope_tl_run";
+
 // experiment / setExperiment 与全站共享(跳动检测、保存等都用它作实验名/命名前缀)。
 export default function PcTimelapse({ experiment, setExperiment }) {
   const { t } = useI18n();
@@ -33,58 +36,142 @@ export default function PcTimelapse({ experiment, setExperiment }) {
   const [count, setCount] = React.useState(0);
   const [lastFile, setLastFile] = React.useState("");
   const [err, setErr] = React.useState("");
+  const [resumed, setResumed] = React.useState(false);
 
-  const startRef = React.useRef(0);
+  // captureOnce 走 ref 取值,避免 setInterval 闭包读到过期 state(续拍恢复时尤其关键)。
+  const startRef = React.useRef(0); // 本次运行开始时间戳 (ms)
+  const startDayRef = React.useRef(0); // 起始 day#
+  const expRef = React.useRef(""); // 实验名 (跟随 prop)
+  const intervalRef = React.useRef(30); // 间隔 (分钟)
+  const countRef = React.useRef(0); // 已拍张数
   const timerRef = React.useRef(null);
 
   React.useEffect(() => {
-    initSaveTarget().then((name) => name && setFolder(name));
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, []);
+    expRef.current = experiment;
+  }, [experiment]);
+  React.useEffect(() => {
+    intervalRef.current = Math.max(1, Number(intervalMin) || 1);
+  }, [intervalMin]);
+
+  // 把运行状态写盘 (localStorage 在 Electron 里跨重启保留)。每次拍成功都刷新计数/时间戳。
+  const persist = () => {
+    try {
+      localStorage.setItem(
+        TL_KEY,
+        JSON.stringify({
+          experiment: expRef.current,
+          startDay: startDayRef.current,
+          intervalMin: intervalRef.current,
+          startEpoch: startRef.current,
+          count: countRef.current,
+          running: true,
+        })
+      );
+    } catch {
+      /* ignore */
+    }
+  };
+  const clearPersist = () => {
+    try {
+      localStorage.removeItem(TL_KEY);
+    } catch {
+      /* ignore */
+    }
+  };
 
   const pickFolder = async () => {
     const name = await chooseFolder();
     if (name) setFolder(name);
   };
 
+  // day# = 起始 day + 距(原始)开始时间的整天数 —— 用 startEpoch 保证续拍后天数连续。
   const dayNumber = () =>
-    Number(startDay) + Math.floor((Date.now() - startRef.current) / 86400000);
+    Number(startDayRef.current) +
+    Math.floor((Date.now() - startRef.current) / 86400000);
 
   const captureOnce = async () => {
     try {
-      const name = buildName(experiment, dayNumber());
+      const name = buildName(expRef.current, dayNumber());
       const blob = await freshFrameBlob();
       await saveBytes(name, await blob.arrayBuffer());
-      setCount((c) => c + 1);
+      countRef.current += 1;
+      setCount(countRef.current);
       setLastFile(name);
       setErr("");
+      persist(); // 断点续拍:每张成功后更新计数与时间戳
     } catch (e) {
-      // 单次失败 (相机离线等) 不停整个任务:记一下,下个周期继续。
+      // 单次失败 (相机离线、网络抖动等) 不停整个任务:记一下,下个周期继续。
       setErr(e.message || String(e));
     }
+  };
+
+  const beginLoop = (delayMs) => {
+    setRunning(true);
+    captureOnce(); // 立即拍第一张
+    timerRef.current = setInterval(captureOnce, delayMs);
   };
 
   const start = async () => {
     if (!currentFolderName()) return setErr(t("pcTlNeedFolder"));
     if (!experiment.trim()) return setErr(t("pcTlNeedCondition"));
     setErr("");
+    setResumed(false);
+    countRef.current = 0;
     setCount(0);
     startRef.current = Date.now();
-    setRunning(true);
-    await captureOnce(); // 立即拍第一张
-    timerRef.current = setInterval(
-      captureOnce,
-      Math.max(1, Number(intervalMin)) * 60000
-    );
+    startDayRef.current = Number(startDay);
+    expRef.current = experiment;
+    intervalRef.current = Math.max(1, Number(intervalMin));
+    persist();
+    beginLoop(intervalRef.current * 60000);
   };
 
   const stop = () => {
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = null;
     setRunning(false);
+    setResumed(false);
+    clearPersist();
   };
+
+  // 挂载:恢复保存目标;若上次运行被意外中断,自动从原起点续拍(day# 连续,计数接着走)。
+  React.useEffect(() => {
+    let alive = true;
+    initSaveTarget().then((name) => {
+      if (!alive) return;
+      if (name) setFolder(name);
+      let saved = null;
+      try {
+        saved = JSON.parse(localStorage.getItem(TL_KEY) || "null");
+      } catch {
+        saved = null;
+      }
+      if (!saved || !saved.running) return;
+      if (!currentFolderName()) {
+        // 保存文件夹没恢复出来,没法续拍:提示重选并清状态
+        setErr(t("pcTlNeedFolder"));
+        clearPersist();
+        return;
+      }
+      // 用原始 startEpoch 恢复,天数从头算起保持连续
+      expRef.current = saved.experiment || "";
+      setExperiment(saved.experiment || "");
+      startDayRef.current = Number(saved.startDay) || 0;
+      setStartDay(Number(saved.startDay) || 0);
+      intervalRef.current = Math.max(1, Number(saved.intervalMin) || 30);
+      setIntervalMin(intervalRef.current);
+      startRef.current = Number(saved.startEpoch) || Date.now();
+      countRef.current = Number(saved.count) || 0;
+      setCount(countRef.current);
+      setResumed(true);
+      beginLoop(intervalRef.current * 60000);
+    });
+    return () => {
+      alive = false;
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const previewName = buildName(experiment || "condition", Number(startDay));
 
@@ -164,6 +251,11 @@ export default function PcTimelapse({ experiment, setExperiment }) {
           <span className="flex items-center gap-1 text-xs text-emerald-400">
             <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-emerald-400" />
             {t("pcTlStatus", count)}
+            {resumed && (
+              <span title="resumed after restart" className="text-sky-400">
+                ↻
+              </span>
+            )}
           </span>
         )}
       </div>

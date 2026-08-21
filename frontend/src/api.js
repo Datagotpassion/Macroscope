@@ -118,10 +118,20 @@ export async function fetchLatestFrameBlob() {
 }
 
 // 强制新拍一帧并返回 JPEG blob (fresh=true,不做孔位检测) —— 供定时拍摄用。
-export async function freshFrameBlob() {
-  const r = await fetch(u(`/api/plate/image?annotate=false&fresh=true&t=${Date.now()}`));
-  if (!r.ok) throw new Error("capture failed");
-  return r.blob();
+// 带超时:相机卡死时不让这次抓取无限挂起(否则会拖住整个定时任务)。
+export async function freshFrameBlob(timeoutMs = 30000) {
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const r = await fetch(
+      u(`/api/plate/image?annotate=false&fresh=true&t=${Date.now()}`),
+      { signal: ctrl.signal }
+    );
+    if (!r.ok) throw new Error("capture failed");
+    return await r.blob();
+  } finally {
+    clearTimeout(to);
+  }
 }
 
 // 图像 URL (带 cache-buster)

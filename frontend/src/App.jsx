@@ -4,6 +4,7 @@ import WellDetail from "./WellDetail";
 import InspectSnapshot from "./InspectSnapshot";
 import BeatDetect from "./BeatDetect";
 import TimelapseControl from "./TimelapseControl";
+import PcTimelapse from "./PcTimelapse";
 import LocalSave from "./LocalSave";
 import StageControl from "./StageControl";
 import Settings from "./Settings";
@@ -391,13 +392,14 @@ export default function App() {
             setAutoSave={setAutoSave}
             registerSaver={registerSaver}
           />
-          <StageControl />
+          <StageControl roi={selectedWell} />
           <TimelapseControl
             jobs={status?.jobs ?? []}
             onChange={refreshStatus}
             experiment={experiment}
             setExperiment={setExperiment}
           />
+          <PcTimelapse />
           <Settings status={status} onReconnect={refreshStatus} />
         </div>
       </div>

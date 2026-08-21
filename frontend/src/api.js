@@ -117,6 +117,13 @@ export async function fetchLatestFrameBlob() {
   return r.blob();
 }
 
+// 强制新拍一帧并返回 JPEG blob (fresh=true,不做孔位检测) —— 供定时拍摄用。
+export async function freshFrameBlob() {
+  const r = await fetch(u(`/api/plate/image?annotate=false&fresh=true&t=${Date.now()}`));
+  if (!r.ok) throw new Error("capture failed");
+  return r.blob();
+}
+
 // 图像 URL (带 cache-buster)
 export const plateImageUrl = (annotate = false) =>
   u(`/api/plate/image?annotate=${annotate}&t=${Date.now()}`);

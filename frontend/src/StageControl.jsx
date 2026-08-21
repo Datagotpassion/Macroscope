@@ -26,7 +26,7 @@ function loadPositions() {
 // 运动平台手动控制:连接/坐标 + XY/Z 步进 + 绝对前往 + 已存位置(示教) + 回零 + 急停。
 // CoreXY 移动相机,Z 移动板(对焦)。未 home 时 Klipper 会拒绝坐标移动,错误会显示出来。
 // 已存位置只记录 XY(相机在板上的位置),是后续「逐孔扫描」的孔位表基础。
-export default function StageControl() {
+export default function StageControl({ roi }) {
   const { t } = useI18n();
   const [st, setSt] = React.useState(null);
   const [step, setStep] = React.useState(1);
@@ -45,6 +45,8 @@ export default function StageControl() {
 
   const [gotoX, setGotoX] = React.useState("");
   const [gotoY, setGotoY] = React.useState("");
+  const [gotoZ, setGotoZ] = React.useState("");
+  const [afRange, setAfRange] = React.useState(1.0);
   const [positions, setPositions] = React.useState(loadPositions);
   const [newName, setNewName] = React.useState("");
 
@@ -125,6 +127,12 @@ export default function StageControl() {
     return run(() => stageMove({ x, y, feed: 3000 }));
   };
 
+  // 手动对焦:直接把 Z 移到指定高度(慢速,安全)。先移到大致焦点,再自动对焦微调。
+  const goToZ = () => {
+    if (gotoZ === "") return;
+    return run(() => stageMove({ z: Number(gotoZ), feed: 600 }));
+  };
+
   const savePosition = () => {
     if (!pos) return;
     const name = newName.trim() || `P${positions.length + 1}`;
@@ -147,7 +155,14 @@ export default function StageControl() {
     setAfRunning(true);
     return run(async () => {
       try {
-        setAfResult(await stageAutofocus({ z_range: 1.0, step: 0.1 }));
+        // 选中了某个孔就只对该孔区域对焦(否则整幅 —— 容易被别处细节带偏)。
+        const params = { z_range: afRange, step: 0.1 };
+        if (roi) {
+          params.cx = roi.x;
+          params.cy = roi.y;
+          params.r = roi.r;
+        }
+        setAfResult(await stageAutofocus(params));
       } finally {
         setAfRunning(false);
       }
@@ -249,8 +264,33 @@ export default function StageControl() {
             </div>
           </div>
 
-          {/* 自动对焦 (Z 小步扫描找清晰度峰值) */}
-          <div className="mt-3 flex items-center gap-2 text-xs">
+          {/* 手动对焦:直接移到某个 Z。先手动大致对上焦,再自动对焦微调。 */}
+          <div className="mt-3">
+            <div className="mb-1 text-[10px] uppercase text-slate-500">
+              {t("stageSetZ")}
+            </div>
+            <div className="flex items-center gap-1 text-xs">
+              <input
+                type="number"
+                step="0.1"
+                placeholder="Z"
+                value={gotoZ}
+                onChange={(e) => setGotoZ(e.target.value)}
+                className="w-16 rounded bg-slate-800 px-2 py-1"
+              />
+              <button
+                onClick={goToZ}
+                disabled={busy || !connected || !isHomed("z")}
+                className="rounded bg-cyan-700 px-3 py-1 font-medium hover:bg-cyan-600 disabled:opacity-40"
+              >
+                {t("stageGo")}
+              </button>
+              <span className="text-[10px] text-slate-500">{t("stageSetZHint")}</span>
+            </div>
+          </div>
+
+          {/* 自动对焦:以当前 Z 为中心 ±range 小步 (0.1mm) 扫描找清晰度峰值 */}
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
             <button
               onClick={runAutofocus}
               disabled={busy || !connected || !isHomed("z")}
@@ -259,6 +299,21 @@ export default function StageControl() {
             >
               {afRunning ? t("stageAfRunning") : t("stageAutofocus")}
             </button>
+            <label className="flex items-center gap-1 text-[10px] text-slate-400">
+              ±
+              <input
+                type="number"
+                step="0.5"
+                min="0.1"
+                value={afRange}
+                onChange={(e) => setAfRange(Math.max(0.1, Number(e.target.value) || 1))}
+                className="w-12 rounded bg-slate-800 px-1 py-0.5"
+              />
+              mm
+            </label>
+            <span className="text-[10px] text-slate-400">
+              {roi ? t("stageAfTarget", roi.label || "?") : t("stageAfWhole")}
+            </span>
             {afResult && afResult.best_z != null && (
               <span className="text-emerald-400">
                 {t("stageAfResult", afResult.best_z)}

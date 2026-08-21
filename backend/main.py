@@ -388,6 +388,11 @@ async def run_autofocus(
 
 # ── WebSocket 实时预览 (F2) ──
 
+# 只允许一条活跃预览流:新连接进来,旧循环下一轮检测到代次变化就退出并释放相机。
+# 防止网络抖动(如以太网抖动)引发的重连风暴把多条 capture_array 循环叠在一起,
+# 争抢同一个相机、慢慢拖垮 Pi 的相机管线。
+_preview_gen = 0
+
 
 @app.websocket("/ws/preview")
 async def preview(ws: WebSocket):
@@ -398,7 +403,10 @@ async def preview(ws: WebSocket):
     - 流水线——在发送上一帧的同时,后台线程已经在抓下一帧 (抓帧和编码/网络发送重叠);
     - 预览质量 65,体积更小、编码更快。
     """
+    global _preview_gen
     await ws.accept()
+    _preview_gen += 1
+    my_gen = _preview_gen
     loop = asyncio.get_event_loop()
     interval = 1.0 / PREVIEW_FPS
     next_frame: asyncio.Task | None = None
@@ -408,8 +416,13 @@ async def preview(ws: WebSocket):
         # 先抓第一帧,之后边发边抓下一帧
         next_frame = asyncio.create_task(asyncio.to_thread(camera.capture_array, True))
         while True:
+            # 有更新的预览连接接管了 -> 退出,把相机让给它 (杜绝重连叠加)
+            if my_gen != _preview_gen:
+                break
             t0 = loop.time()
             frame = await next_frame
+            if my_gen != _preview_gen:
+                break
             # 立刻安排下一帧的抓取,与本帧的编码/发送并行
             next_frame = asyncio.create_task(
                 asyncio.to_thread(camera.capture_array, True)

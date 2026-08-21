@@ -3,7 +3,6 @@ import GridMask from "./GridMask";
 import WellDetail from "./WellDetail";
 import InspectSnapshot from "./InspectSnapshot";
 import BeatDetect from "./BeatDetect";
-import TimelapseControl from "./TimelapseControl";
 import PcTimelapse from "./PcTimelapse";
 import LocalSave from "./LocalSave";
 import StageControl from "./StageControl";
@@ -393,13 +392,7 @@ export default function App() {
             registerSaver={registerSaver}
           />
           <StageControl roi={selectedWell} />
-          <TimelapseControl
-            jobs={status?.jobs ?? []}
-            onChange={refreshStatus}
-            experiment={experiment}
-            setExperiment={setExperiment}
-          />
-          <PcTimelapse />
+          <PcTimelapse experiment={experiment} setExperiment={setExperiment} />
           <Settings status={status} onReconnect={refreshStatus} />
         </div>
       </div>

@@ -23,10 +23,10 @@ function buildName(condition, dayNum, d = new Date()) {
   return raw.replace(/[<>:"/\\|?*\n\r]/g, "").trim() + ".jpg";
 }
 
-export default function PcTimelapse() {
+// experiment / setExperiment 与全站共享(跳动检测、保存等都用它作实验名/命名前缀)。
+export default function PcTimelapse({ experiment, setExperiment }) {
   const { t } = useI18n();
   const [folder, setFolder] = React.useState(null);
-  const [condition, setCondition] = React.useState("");
   const [startDay, setStartDay] = React.useState(0);
   const [intervalMin, setIntervalMin] = React.useState(30);
   const [running, setRunning] = React.useState(false);
@@ -54,7 +54,7 @@ export default function PcTimelapse() {
 
   const captureOnce = async () => {
     try {
-      const name = buildName(condition, dayNumber());
+      const name = buildName(experiment, dayNumber());
       const blob = await freshFrameBlob();
       await saveBytes(name, await blob.arrayBuffer());
       setCount((c) => c + 1);
@@ -68,7 +68,7 @@ export default function PcTimelapse() {
 
   const start = async () => {
     if (!currentFolderName()) return setErr(t("pcTlNeedFolder"));
-    if (!condition.trim()) return setErr(t("pcTlNeedCondition"));
+    if (!experiment.trim()) return setErr(t("pcTlNeedCondition"));
     setErr("");
     setCount(0);
     startRef.current = Date.now();
@@ -86,7 +86,7 @@ export default function PcTimelapse() {
     setRunning(false);
   };
 
-  const previewName = buildName(condition || "condition", Number(startDay));
+  const previewName = buildName(experiment || "condition", Number(startDay));
 
   return (
     <div className="space-y-2 rounded-lg border border-slate-700 p-4 text-sm">
@@ -111,8 +111,8 @@ export default function PcTimelapse() {
         <input
           className="min-w-0 flex-1 rounded bg-slate-800 px-2 py-1 text-xs"
           placeholder={t("pcTlCondition")}
-          value={condition}
-          onChange={(e) => setCondition(e.target.value)}
+          value={experiment}
+          onChange={(e) => setExperiment(e.target.value)}
           disabled={running}
         />
         <label className="flex items-center gap-1 text-xs text-slate-400">

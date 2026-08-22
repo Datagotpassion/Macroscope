@@ -1,0 +1,14 @@
+[Unit]
+Description=PlateScope camera watchdog (restarts platescope when the camera wedges)
+After=platescope.service
+Wants=platescope.service
+
+[Service]
+Type=simple
+# Runs as root so it can `systemctl restart platescope`.
+ExecStart=/home/kdcberry/Macroscope/deploy/watchdog/platescope-watchdog.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

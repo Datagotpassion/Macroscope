@@ -60,7 +60,7 @@ class _Backend:
 
     def configure_still(self) -> None: ...
     def configure_preview(self) -> None: ...
-    def capture_array(self) -> np.ndarray: ...
+    def capture_array(self, preview: bool = False) -> np.ndarray: ...
     def set_roi(self, cx: float, cy: float, r: float) -> None: ...
     def clear_roi(self) -> None: ...
     def lock_exposure(self) -> None: ...
@@ -75,53 +75,62 @@ class PiCameraBackend(_Backend):
         from picamera2 import Picamera2  # 延迟导入,开发机上没有也不报错
 
         self._cam = Picamera2()
-        # 静帧也用 binned 传感器模式 (raw=STILL_SIZE):带宽减半,临界排线也能串流;
-        # 顺带让静帧与预览共用同一视场,网格/裁剪/跳动检测坐标天然一致。
-        self._still_cfg = self._cam.create_still_configuration(
-            main={"size": STILL_SIZE, "format": "RGB888"},
-            raw={"size": STILL_SIZE},
-        )
-        # raw 用全视场 binned 模式 (2028x1520),强制预览的视场 = 全分辨率静帧的视场。
-        # 否则 picamera2 会自动选 1332x990 中心裁剪模式,导致预览和静帧视场不一致 ——
-        # 在预览上对齐的网格,放大/跳动检测 (用全幅静帧/全传感器 ScalerCrop) 就会偏。
-        self._preview_cfg = self._cam.create_preview_configuration(
-            main={"size": PREVIEW_SIZE, "format": "RGB888"},
-            raw={"size": (2028, 1520)},
-        )
-        self._mode: str | None = None
-        self._started = False
+        # 关键:相机只配置一次、永不再 reconfigure。
+        # 旧实现让静帧/预览用不同配置,每次拍照都 stop()->configure()->start() 切模式;
+        # 在临界 CSI 上只要有一次切换 hang 住(且持锁),整台相机就永久卡死 —— 这正是
+        # "跑几小时后相机彻底不出图" 的根因。改成单一配置 + 双流,之后再也不切模式:
+        #   main  = 静帧分辨率 (2028x1520 RGB),定时拍摄/快照/自动对焦取这个;
+        #   lores = 预览分辨率 (1014x760 YUV420),实时预览取这个,ISP 直接产出、省 CPU。
+        # 两条流共用同一 binned 传感器模式 (raw 2028x1520),视场一致,网格/ROI 坐标不变。
+        self._lores = True
+        try:
+            self._cfg = self._cam.create_video_configuration(
+                main={"size": STILL_SIZE, "format": "RGB888"},
+                lores={"size": PREVIEW_SIZE, "format": "YUV420"},
+                raw={"size": (2028, 1520)},
+            )
+        except Exception as e:  # noqa: BLE001 —— 个别 picamera2 版本无 lores,退回单主流
+            _log(f"[camera] lores 配置不可用 ({e!r}),回退单主流 + 软件缩放预览")
+            self._lores = False
+            self._cfg = self._cam.create_video_configuration(
+                main={"size": STILL_SIZE, "format": "RGB888"},
+                raw={"size": (2028, 1520)},
+            )
         # 全传感器像素阵列尺寸 (ScalerCrop 的坐标系)
         self._full = tuple(
             self._cam.camera_properties.get("PixelArraySize", FULL_SIZE)
         )
-        self.configure_still()  # 首次配置 + start
+        self._cam.configure(self._cfg)
+        self._cam.start()  # 全程只 start 一次
 
-    def _switch(self, mode: str, cfg) -> None:
-        """切换相机模式。picamera2 要求 reconfigure 前必须 stop,之后再 start。
-
-        旧实现直接在运行中的相机上 configure() 会抛异常 —— 这正是实时预览
-        切到低分辨率模式时静默挂掉的原因。
-        """
-        if self._mode == mode:
-            return
-        if self._started:
-            self._cam.stop()
-            self._started = False
-        self._cam.configure(cfg)
-        self._cam.start()
-        self._started = True
-        self._mode = mode
-
+    # 单一配置:configure_* 仅保留以兼容旧接口,不再做任何模式切换 (故意留空)。
     def configure_still(self) -> None:
-        self._switch("still", self._still_cfg)
+        pass
 
     def configure_preview(self) -> None:
-        self._switch("preview", self._preview_cfg)
+        pass
 
-    def capture_array(self) -> np.ndarray:
-        # picamera2 返回 RGB,后续 OpenCV 处理统一用 BGR
-        rgb = self._cam.capture_array()
-        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    def capture_array(self, preview: bool = False) -> np.ndarray:
+        # 预览抓 lores (YUV420 -> BGR);静帧抓 main (RGB -> BGR)。全程不 reconfigure。
+        if preview and self._lores:
+            try:
+                yuv = self._cam.capture_array("lores")
+                bgr = cv2.cvtColor(yuv, cv2.COLOR_YUV420p2BGR)
+                # lores 宽度可能被硬件对齐补齐 (stride padding):归一化回预览尺寸
+                if (bgr.shape[1], bgr.shape[0]) != PREVIEW_SIZE:
+                    bgr = cv2.resize(
+                        bgr[:, : PREVIEW_SIZE[0]], PREVIEW_SIZE,
+                        interpolation=cv2.INTER_AREA,
+                    )
+                return bgr
+            except Exception as e:  # noqa: BLE001 —— lores 有问题就永久退回主流缩放,不影响定时拍摄
+                _log(f"[camera] lores 预览失败 ({e!r}),永久改用主流缩放预览")
+                self._lores = False
+        rgb = self._cam.capture_array("main")
+        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        if preview:  # 无 lores 时的回退:抓主流再缩小到预览尺寸
+            bgr = cv2.resize(bgr, PREVIEW_SIZE, interpolation=cv2.INTER_AREA)
+        return bgr
 
     def _max_crop(self) -> tuple[int, int, int, int]:
         """有效裁剪范围 (x_off, y_off, w, h);用 ScalerCropMaximum,回退到全阵列。"""
@@ -197,19 +206,20 @@ class MockCamera(_Backend):
     ROWS, COLS = 8, 12
 
     def __init__(self) -> None:
-        self._size = FULL_SIZE
-        self._base = self._render_plate(FULL_SIZE)
+        self._bases: dict[tuple[int, int], np.ndarray] = {}
         self._roi: tuple[float, float, float] | None = None
 
+    def _base_for(self, size: tuple[int, int]) -> np.ndarray:
+        if size not in self._bases:
+            self._bases[size] = self._render_plate(size)
+        return self._bases[size]
+
+    # 单一配置语义:configure_* 留空,尺寸由 capture_array(preview) 决定。
     def configure_still(self) -> None:
-        if self._size != FULL_SIZE:
-            self._size = FULL_SIZE
-            self._base = self._render_plate(FULL_SIZE)
+        pass
 
     def configure_preview(self) -> None:
-        if self._size != PREVIEW_SIZE:
-            self._size = PREVIEW_SIZE
-            self._base = self._render_plate(PREVIEW_SIZE)
+        pass
 
     def _render_plate(self, size: tuple[int, int]) -> np.ndarray:
         w, h = size
@@ -244,12 +254,11 @@ class MockCamera(_Backend):
     def clear_roi(self) -> None:
         self._roi = None
 
-    def capture_array(self) -> np.ndarray:
+    def capture_array(self, preview: bool = False) -> np.ndarray:
+        base = self._base_for(PREVIEW_SIZE if preview else FULL_SIZE)
         # 加一点噪声,让每帧略有不同 (预览串流看起来是 "活" 的)
-        noise = np.random.default_rng().integers(
-            -6, 6, self._base.shape, dtype=np.int16
-        )
-        frame = np.clip(self._base.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+        noise = np.random.default_rng().integers(-6, 6, base.shape, dtype=np.int16)
+        frame = np.clip(base.astype(np.int16) + noise, 0, 255).astype(np.uint8)
         if self._roi:
             # 模拟硬件 ROI:裁出该区域并放大回输出尺寸。
             # 半高 = 孔半径 × ROI_PADDING (恰好覆盖孔),半宽按输出宽高比补足。
@@ -292,15 +301,31 @@ class CameraController:
         self._lock = threading.Lock()
         self.is_mock = isinstance(self._backend, MockCamera)
         self.roi_active = False
+        self._fails = 0  # 连续抓取失败计数,用于软性自愈
 
     def capture_array(self, preview: bool = False) -> np.ndarray:
-        """拍一帧返回 BGR numpy array。preview=True 用低分辨率。"""
+        """拍一帧返回 BGR numpy array。preview=True 用低分辨率 (lores)。
+
+        单一相机配置,不再切模式。若连续多次抓取失败 (相机返回错误的软卡死),
+        自动重建相机后端自愈;真正的 C 层 hang 由 systemd 的 Restart 兜底。
+        """
         with self._lock:
-            if preview:
-                self._backend.configure_preview()
-            else:
-                self._backend.configure_still()
-            return self._backend.capture_array()
+            try:
+                frame = self._backend.capture_array(preview)
+                self._fails = 0
+                return frame
+            except Exception:
+                self._fails += 1
+                if not self.is_mock and self._fails >= 3:
+                    _log(f"[camera] 连续 {self._fails} 次抓取失败,重建相机后端自愈…")
+                    try:
+                        self._backend.close()
+                    except Exception:
+                        pass
+                    self._backend = _make_backend()
+                    self.is_mock = isinstance(self._backend, MockCamera)
+                    self._fails = 0
+                raise
 
     def set_roi(self, cx: float, cy: float, r: float) -> None:
         """硬件数字变焦到某个孔 (供实时高清单孔检视)。"""
@@ -329,7 +354,7 @@ class CameraController:
             self._backend.configure_preview()
             # 全画面先曝光稳定几帧,再锁死曝光 (避免裁孔后自动测光的亮度阶跃)
             for _ in range(4):
-                self._backend.capture_array()
+                self._backend.capture_array(True)
             self._backend.lock_exposure()
             self._backend.set_roi(cx, cy, r)
             self.roi_active = True
@@ -337,10 +362,10 @@ class CameraController:
                 # 丢掉 ROI 刚生效后的过渡帧 (~0.6s)
                 t_settle = time.perf_counter()
                 while time.perf_counter() - t_settle < 0.6:
-                    self._backend.capture_array()
+                    self._backend.capture_array(True)
                 t0 = time.perf_counter()
                 while time.perf_counter() - t0 < duration:
-                    frame = self._backend.capture_array()
+                    frame = self._backend.capture_array(True)
                     if patch is None:
                         patch = frame.copy()  # 代表帧:实际测量的孔区域
                     small = cv2.resize(frame, (100, 75))

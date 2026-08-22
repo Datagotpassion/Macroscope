@@ -129,6 +129,15 @@ export async function freshFrameBlob(timeoutMs = 30000) {
     );
     if (!r.ok) throw new Error("capture failed");
     return await r.blob();
+  } catch (e) {
+    // 把 AbortController 那句难懂的 "signal is aborted without reason" 换成人话:
+    // 这次抓取超过 timeoutMs 没回来(多半是网络抖动/相机卡了一下),本帧跳过、下轮继续。
+    if (e && e.name === "AbortError") {
+      throw new Error(
+        `capture timed out (>${Math.round(timeoutMs / 1000)}s) — network or camera stalled; skipped this frame`
+      );
+    }
+    throw e;
   } finally {
     clearTimeout(to);
   }

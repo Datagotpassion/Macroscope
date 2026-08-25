@@ -6,6 +6,7 @@ import BeatDetect from "./BeatDetect";
 import PcTimelapse from "./PcTimelapse";
 import LocalSave from "./LocalSave";
 import StageControl from "./StageControl";
+import PlateMap from "./PlateMap";
 import Settings from "./Settings";
 import { useI18n } from "./i18n.jsx";
 import { capture, getStatus, openPreview, plateImageUrl } from "./api";
@@ -392,6 +393,7 @@ export default function App() {
             registerSaver={registerSaver}
           />
           <StageControl roi={selectedWell} />
+          <PlateMap />
           <PcTimelapse experiment={experiment} setExperiment={setExperiment} />
           <Settings status={status} onReconnect={refreshStatus} />
         </div>

@@ -5,6 +5,7 @@ import {
   stageJog,
   stageMove,
   stageHome,
+  stageForcePosition,
   stageStop,
   stageFirmwareRestart,
   stageAutofocus,
@@ -423,6 +424,14 @@ export default function StageControl({ roi }) {
               className="rounded bg-slate-700 px-2 py-1 hover:bg-slate-600 disabled:opacity-50"
             >
               {t("stageHomeZ")}
+            </button>
+            <button
+              onClick={() => run(() => stageForcePosition())}
+              disabled={busy || !connected}
+              title={t("stageForceHint")}
+              className="rounded bg-amber-800 px-2 py-1 text-amber-100 hover:bg-amber-700 disabled:opacity-50"
+            >
+              {t("stageForce")}
             </button>
           </div>
 

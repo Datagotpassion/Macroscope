@@ -116,6 +116,9 @@ const translations = {
     stageHomeAll: "回零 全部",
     stageHomeXY: "回零 XY",
     stageHomeZ: "回零 Z",
+    stageForce: "强制可动 (免回零)",
+    stageForceHint:
+      "不回零直接解锁移动:把当前位置当作量程中点并标记已回零,之后 jog/前往即可用 (CoreXY 走直线)。坐标是假定的,精确定位仍需回零。用于回零前/失败时手动挪台。",
     stageEstop: "急停",
     stageRestart: "复位固件",
     stageHomeHint: "尚未回零 —— 未回零时 Klipper 会拒绝坐标移动。先点回零 (或急停后复位固件)。",
@@ -255,6 +258,9 @@ const translations = {
     stageHomeAll: "Home All",
     stageHomeXY: "Home XY",
     stageHomeZ: "Home Z",
+    stageForce: "Force move (no home)",
+    stageForceHint:
+      "Unlock motion without homing: treats the current spot as mid-range and marks the axes homed, so jog/go-to work (CoreXY stays straight). Coordinates are assumed — real homing is still needed for accurate positions. For nudging the stage before/without a home.",
     stageEstop: "E-STOP",
     stageRestart: "Restart FW",
     stageHomeHint:

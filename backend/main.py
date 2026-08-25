@@ -300,6 +300,21 @@ async def stage_move(
     return {"ok": True}
 
 
+@app.post("/api/stage/force_position")
+async def stage_force_position(
+    x: float | None = None,
+    y: float | None = None,
+    z: float | None = None,
+):
+    """不 home 也能动:SET_KINEMATIC_POSITION 假定当前位置为给定坐标 (默认量程中点)
+    并标记为已 home,之后普通 jog/前往即可用 (CoreXY 正确)。仅用于手动挪台/救援。"""
+    try:
+        await asyncio.to_thread(stage.force_position, x, y, z)
+    except StageError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
 @app.post("/api/stage/home")
 async def stage_home(axes: str = "XYZ"):
     """回零。sensorless XY homing 由 printer.cfg 配置。"""

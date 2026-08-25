@@ -132,6 +132,29 @@ class StageController:
             return
         self.send("G90\nG1 " + " ".join(parts) + f" F{feed}")
 
+    def force_position(self, x=None, y=None, z=None) -> None:
+        """未 home 也能动:用 SET_KINEMATIC_POSITION 把当前物理位置「声明」为给定坐标
+        并将这些轴标记为已 home,之后普通的协调移动 (G1) 就能用 —— CoreXY 也走直线,
+        不是单电机的斜向。不给某轴时默认取该轴量程中点,让两个方向都留出余量。
+
+        注意:这只是「假装已 home」,坐标是人为设定的,软限位据此判断;真正要精确
+        坐标仍需 G28。用途:home 之前/失败时手动挪一挪、从卡死里把台子挪开。
+        """
+        st = self.status()
+        lo = st.get("axis_minimum") or [0.0, 0.0, 0.0, 0.0]
+        hi = st.get("axis_maximum") or [325.0, 230.0, 60.0, 0.0]
+
+        def mid(i: int) -> float:
+            try:
+                return round((lo[i] + hi[i]) / 2.0, 3)
+            except Exception:  # noqa: BLE001
+                return 0.0
+
+        x = mid(0) if x is None else x
+        y = mid(1) if y is None else y
+        z = mid(2) if z is None else z
+        self.send(f"SET_KINEMATIC_POSITION X={x} Y={y} Z={z}")
+
     def home(self, axes: str = "XYZ") -> None:
         """回零 (sensorless XY homing 在 printer.cfg 里配)。axes 例如 'XY' / 'Z'。"""
         letters = " ".join(a for a in "XYZ" if a in axes.upper())

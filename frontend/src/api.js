@@ -188,6 +188,16 @@ export function stageMove({ x, y, z, feed = 1200 }) {
   return stagePost(`/api/stage/move?${p.toString()}`);
 }
 
+// 不 home 也能动:把当前位置声明为已知坐标 (默认量程中点) 并标记已 home,之后 jog 即可用。
+export function stageForcePosition({ x, y, z } = {}) {
+  const p = new URLSearchParams();
+  if (x != null) p.set("x", x);
+  if (y != null) p.set("y", y);
+  if (z != null) p.set("z", z);
+  const qs = p.toString();
+  return stagePost(`/api/stage/force_position${qs ? "?" + qs : ""}`);
+}
+
 export const stageHome = (axes = "XYZ") =>
   stagePost(`/api/stage/home?axes=${axes}`);
 export const stageStop = () => stagePost("/api/stage/stop");

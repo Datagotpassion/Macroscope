@@ -27,6 +27,8 @@ export default function App() {
   const [editGrid, setEditGrid] = React.useState(false);
   const [autoSave, setAutoSave] = React.useState(false);
   const [inspectWell, setInspectWell] = React.useState(null); // 硬件变焦检视中的孔
+  const [ctrlTab, setCtrlTab] = React.useState("stage"); // 右侧控制面板分页
+  const [tlRunning, setTlRunning] = React.useState(false); // 定时/巡扫是否在跑(给分页标个点)
 
   // 分支 B:检视用全分辨率静帧轮询。进入时停掉实时预览,把相机让给静帧拍摄。
   const startInspect = React.useCallback((well) => {
@@ -377,8 +379,9 @@ export default function App() {
           )}
         </div>
 
-        {/* 右:单孔放大 + 控制 */}
-        <div className="space-y-4">
+        {/* 右:单孔放大 + 控制 (分页) */}
+        <div className="space-y-3">
+          {/* 单孔放大始终显示 —— 它跟着预览里选中的孔 */}
           <WellDetail
             well={selectedWell}
             livePreview={livePreview}
@@ -386,16 +389,55 @@ export default function App() {
             inspecting={!!inspectWell}
             onInspect={startInspect}
           />
-          <LocalSave
-            experiment={experiment}
-            autoSave={autoSave}
-            setAutoSave={setAutoSave}
-            registerSaver={registerSaver}
-          />
-          <StageControl roi={selectedWell} />
-          <PlateMap />
-          <PcTimelapse experiment={experiment} setExperiment={setExperiment} />
-          <Settings status={status} onReconnect={refreshStatus} />
+
+          {/* 分页标签 */}
+          <div className="flex gap-1 border-b border-slate-700 text-sm">
+            {[
+              ["stage", "Stage"],
+              ["plate", "Plate"],
+              ["capture", "Timelapse"],
+              ["settings", "⚙"],
+            ].map(([id, label]) => (
+              <button
+                key={id}
+                onClick={() => setCtrlTab(id)}
+                className={`relative -mb-px rounded-t px-3 py-1.5 ${
+                  ctrlTab === id
+                    ? "border border-b-0 border-slate-700 bg-slate-900 font-medium text-slate-100"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                {label}
+                {id === "capture" && tlRunning && (
+                  <span className="absolute right-0.5 top-0.5 h-2 w-2 animate-pulse rounded-full bg-emerald-400" />
+                )}
+              </button>
+            ))}
+          </div>
+
+          {/* 面板全部保持挂载,只隐藏非当前页 —— 定时/巡扫切页也不会停 */}
+          <div className={ctrlTab === "stage" ? "" : "hidden"}>
+            <StageControl roi={selectedWell} />
+          </div>
+          <div className={ctrlTab === "plate" ? "" : "hidden"}>
+            <PlateMap />
+          </div>
+          <div className={ctrlTab === "capture" ? "space-y-3" : "hidden"}>
+            <LocalSave
+              experiment={experiment}
+              autoSave={autoSave}
+              setAutoSave={setAutoSave}
+              registerSaver={registerSaver}
+            />
+            <PcTimelapse
+              experiment={experiment}
+              setExperiment={setExperiment}
+              onRunningChange={setTlRunning}
+            />
+          </div>
+          <div className={ctrlTab === "settings" ? "" : "hidden"}>
+            <Settings status={status} onReconnect={refreshStatus} />
+          </div>
         </div>
       </div>
     </div>

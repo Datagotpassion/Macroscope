@@ -32,7 +32,7 @@ function buildName(condition, dayNum, block, d = new Date()) {
 const TL_KEY = "platescope_tl_run";
 
 // experiment / setExperiment 与全站共享(跳动检测、保存等都用它作实验名/命名前缀)。
-export default function PcTimelapse({ experiment, setExperiment }) {
+export default function PcTimelapse({ experiment, setExperiment, onRunningChange }) {
   const { t } = useI18n();
   const [folder, setFolder] = React.useState(null);
   const [startDay, setStartDay] = React.useState(0);
@@ -66,6 +66,9 @@ export default function PcTimelapse({ experiment, setExperiment }) {
   React.useEffect(() => {
     scanRef.current = scan;
   }, [scan]);
+  React.useEffect(() => {
+    onRunningChange?.(running); // 让父层(分页标签)知道是否在跑
+  }, [running, onRunningChange]);
 
   // 把运行状态写盘 (localStorage 在 Electron 里跨重启保留)。每次拍成功都刷新计数/时间戳。
   const persist = () => {

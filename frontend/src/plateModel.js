@@ -111,3 +111,62 @@ export function keyLabel(map, k) {
   const b = listBlocks(map).find((x) => x.key === k);
   return b ? b.label : "?";
 }
+
+// ── 多板层:整个可达区域里放多块板,每块板 = 上面的单板对象 + id/name ──
+
+export const STORE_KEY = "platescope_stagemap_v1";
+
+export function newPlate(format = 96, name = "Plate") {
+  const [br, bc] = DEFAULT_BLOCK[format] || [1, 1];
+  return {
+    id: `p${Date.now()}${Math.floor(Math.random() * 1000)}`,
+    name,
+    format,
+    blockR: br,
+    blockC: bc,
+    ref: {},
+    z: {},
+  };
+}
+
+export function loadStore() {
+  try {
+    const s = JSON.parse(localStorage.getItem(STORE_KEY));
+    if (s && Array.isArray(s.plates) && s.plates.length) return s;
+  } catch {
+    /* ignore */
+  }
+  const p = newPlate(96, "Plate 1");
+  return { plates: [p], selectedId: p.id };
+}
+export function saveStore(s) {
+  localStorage.setItem(STORE_KEY, JSON.stringify(s));
+}
+export function selectedPlate(store) {
+  return store.plates.find((p) => p.id === store.selectedId) || store.plates[0];
+}
+export function loadSelectedPlate() {
+  return selectedPlate(loadStore());
+}
+
+// 板在载物台坐标系里的四角 [tl, tr, br, bl] (br 由平行四边形补出,容许旋转)。
+export function plateQuad(plate) {
+  const { tl, tr, bl } = plate.ref || {};
+  if (!tl || !tr || !bl) return null;
+  const br = { x: tr.x + (bl.x - tl.x), y: tr.y + (bl.y - tl.y) };
+  return [tl, tr, br, bl];
+}
+export function plateBBox(plate) {
+  const q = plateQuad(plate);
+  if (!q) return null;
+  const xs = q.map((p) => p.x);
+  const ys = q.map((p) => p.y);
+  return {
+    minX: Math.min(...xs),
+    maxX: Math.max(...xs),
+    minY: Math.min(...ys),
+    maxY: Math.max(...ys),
+    cx: (Math.min(...xs) + Math.max(...xs)) / 2,
+    cy: (Math.min(...ys) + Math.max(...ys)) / 2,
+  };
+}

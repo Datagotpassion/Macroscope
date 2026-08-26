@@ -8,7 +8,7 @@ import {
   saveBytes,
 } from "./save";
 import { freshFrameBlob, stageMove, stageWait } from "./api";
-import { loadPlateMap, listBlocks, blockCenter, cornersSet } from "./plateModel";
+import { loadSelectedPlate, listBlocks, blockCenter, cornersSet } from "./plateModel";
 
 // 客户端定时拍摄 → 保存到本机文件夹 (Electron)。App 端跑计划,每次抓帧写盘。
 // 单点模式:「实验条件 - day # - 时间戳」。
@@ -126,9 +126,9 @@ export default function PcTimelapse({ experiment, setExperiment, onRunningChange
   // 巡扫一圈:依次走每个成像方格 → 到该格对焦 Z → 拍一帧 → 存 (文件名带方格标签)。
   const scanOnce = async () => {
     if (scanBusyRef.current) return; // 上一圈还没扫完就跳过本次触发,避免运动叠加
-    const map = loadPlateMap();
+    const map = loadSelectedPlate();
     if (!cornersSet(map.ref)) {
-      setErr("plate map: teach corners A1 / A12 / H1 first");
+      setErr("stage map: teach the selected plate's corners first");
       return;
     }
     scanBusyRef.current = true;

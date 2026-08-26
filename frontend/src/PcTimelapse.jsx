@@ -132,12 +132,12 @@ export default function PcTimelapse({ experiment, setExperiment, onRunningChange
       return;
     }
     scanBusyRef.current = true;
-    const blocks = listBlocks();
+    const blocks = listBlocks(map);
     const dn = dayNumber();
     try {
       for (let i = 0; i < blocks.length; i++) {
         const b = blocks[i];
-        const p = blockCenter(map.ref, b.br, b.bc);
+        const p = blockCenter(map, b);
         if (!p) continue;
         setScanInfo(`${b.label} (${i + 1}/${blocks.length})`);
         try {

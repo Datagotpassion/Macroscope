@@ -1,20 +1,21 @@
 import React from "react";
 import { stageStatus, stageMove } from "./api";
 import {
-  BLOCK_ROWS,
-  BLOCK_COLS,
+  FORMAT_LIST,
   PLATE_KEY,
   two,
-  bkey,
-  blockLabel,
+  cornerWells,
+  cornersSet as cornersSetFor,
+  blockDims,
+  listBlocks,
+  blockCenter as blockCenterFor,
   keyLabel,
   loadPlateMap,
-  blockCenter as blockCenterFor,
-  cornersSet as cornersSetFor,
+  defaultMap,
 } from "./plateModel";
 
-// 板面地图 (Phase 1):点方格 → 平台移到该格中心;每格可单独教一个对焦 Z。
-// 模型/几何在 platemap.js (与巡扫 timelapse 共用)。全部存 localStorage。
+// 板面地图:选板型 (6/12/24/48/96) → 教 3 个角孔 → 仿射算出每个孔 → 分成成像方格。
+// 点方格 → 平台移到该格中心;每格可单独教一个对焦 Z。全部存 localStorage。
 // 真实坐标依赖「先 home 一次」建立坐标系 (或用 Force move 临时建一个)。
 
 export default function PlateMap() {
@@ -51,26 +52,28 @@ export default function PlateMap() {
   const homed = (st?.homed || "").toLowerCase();
   const xyHomed = homed.includes("x") && homed.includes("y");
 
-  const blockCenter = (br, bc) => blockCenterFor(map.ref, br, bc);
-  const blockZ = (br, bc) => map.z[bkey(br, bc)];
+  const corners = cornerWells(map); // {tl,tr,bl} 显示名,随板型变化
+  const blocks = listBlocks(map);
+  const { nR, nC } = blockDims(map);
   const cornersSet = cornersSetFor(map.ref);
+  const blockZ = (k) => map.z[k];
 
   const nearest = React.useMemo(() => {
     if (!pos || !cornersSet) return null;
     let best = null;
     let bestD = Infinity;
-    for (let br = 0; br < BLOCK_ROWS; br++)
-      for (let bc = 0; bc < BLOCK_COLS; bc++) {
-        const p = blockCenter(br, bc);
-        const d = (p.x - pos.x) ** 2 + (p.y - pos.y) ** 2;
-        if (d < bestD) {
-          bestD = d;
-          best = bkey(br, bc);
-        }
+    for (const b of blocks) {
+      const p = blockCenterFor(map, b);
+      if (!p) continue;
+      const d = (p.x - pos.x) ** 2 + (p.y - pos.y) ** 2;
+      if (d < bestD) {
+        bestD = d;
+        best = b.key;
       }
+    }
     return bestD < 100 ? best : null; // 10mm 内算「在这一格」
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pos, map.ref]);
+  }, [pos, map]);
 
   const run = async (fn) => {
     setBusy(true);
@@ -84,6 +87,17 @@ export default function PlateMap() {
     }
   };
 
+  // 换板型:角坐标与板型绑定 (不同板 A1 位置不同),重置地图,重新教。
+  const changeFormat = (fmt) => {
+    setSel(null);
+    setMap(defaultMap(Number(fmt)));
+  };
+
+  const setBlock = (field, v) => {
+    const n = Math.max(1, Number(v) || 1);
+    setMap((m) => ({ ...m, [field]: n }));
+  };
+
   const teachCorner = (which) =>
     run(async () => {
       const s = await stageStatus();
@@ -94,13 +108,13 @@ export default function PlateMap() {
       }));
     });
 
-  const goBlock = (br, bc) =>
+  const goBlock = (b) =>
     run(async () => {
-      const p = blockCenter(br, bc);
-      if (!p) throw new Error("teach A1, A12, H1 first");
-      setSel(bkey(br, bc));
+      const p = blockCenterFor(map, b);
+      if (!p) throw new Error("teach the 3 corners first");
+      setSel(b.key);
       await stageMove({ x: p.x, y: p.y, feed: 3000 });
-      const z = blockZ(br, bc);
+      const z = blockZ(b.key);
       if (z != null) await stageMove({ z, feed: 600 });
     });
 
@@ -115,9 +129,9 @@ export default function PlateMap() {
     });
 
   const CORNERS = [
-    ["a1", "A1"],
-    ["a12", "A12"],
-    ["h1", "H1"],
+    ["tl", corners.tl],
+    ["tr", corners.tr],
+    ["bl", corners.bl],
   ];
 
   return (
@@ -129,7 +143,46 @@ export default function PlateMap() {
         </span>
       </div>
 
-      {/* 教角孔:把相机对准该角孔中心,再点按钮 */}
+      {/* 板型 + 每帧几孔 */}
+      <div className="mb-2 flex flex-wrap items-center gap-3 text-xs text-slate-400">
+        <label className="flex items-center gap-1">
+          Plate
+          <select
+            value={map.format}
+            onChange={(e) => changeFormat(e.target.value)}
+            className="rounded bg-slate-800 px-1 py-0.5 text-slate-100"
+          >
+            {FORMAT_LIST.map((f) => (
+              <option key={f} value={f}>
+                {f}-well
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-1" title="相机一帧覆盖多少孔 (行×列)">
+          wells/frame
+          <input
+            type="number"
+            min="1"
+            value={map.blockR}
+            onChange={(e) => setBlock("blockR", e.target.value)}
+            className="w-10 rounded bg-slate-800 px-1 py-0.5"
+          />
+          ×
+          <input
+            type="number"
+            min="1"
+            value={map.blockC}
+            onChange={(e) => setBlock("blockC", e.target.value)}
+            className="w-10 rounded bg-slate-800 px-1 py-0.5"
+          />
+        </label>
+        <span className="text-slate-500">
+          = {blocks.length} shot{blocks.length === 1 ? "" : "s"}
+        </span>
+      </div>
+
+      {/* 教角孔 */}
       <div className="mb-1 text-[11px] text-slate-400">
         Center the camera on each corner well, then teach it:
       </div>
@@ -150,24 +203,25 @@ export default function PlateMap() {
         ))}
       </div>
 
-      {/* 6 个成像方格 (2×3) */}
+      {/* 成像方格网 */}
       <div
         className="mb-2 grid gap-1"
-        style={{ gridTemplateColumns: `repeat(${BLOCK_COLS}, minmax(0, 1fr))` }}
+        style={{ gridTemplateColumns: `repeat(${nC}, minmax(0, 1fr))` }}
       >
-        {Array.from({ length: BLOCK_ROWS }).map((_, br) =>
-          Array.from({ length: BLOCK_COLS }).map((__, bc) => {
-            const k = bkey(br, bc);
-            const p = blockCenter(br, bc);
-            const z = blockZ(br, bc);
-            const isSel = sel === k;
-            const isHere = nearest === k;
+        {blocks
+          .slice()
+          .sort((a, b) => a.ri - b.ri || a.ci - b.ci) // 显示按行列,不按蛇形
+          .map((b) => {
+            const p = blockCenterFor(map, b);
+            const z = blockZ(b.key);
+            const isSel = sel === b.key;
+            const isHere = nearest === b.key;
             return (
               <button
-                key={k}
-                onClick={() => goBlock(br, bc)}
+                key={b.key}
+                onClick={() => goBlock(b)}
                 disabled={busy || !connected || !cornersSet}
-                title={p ? `${blockLabel(br, bc)} · X${p.x} Y${p.y}${z != null ? ` Z${z}` : ""}` : "teach corners"}
+                title={p ? `${b.label} · X${p.x} Y${p.y}${z != null ? ` Z${z}` : ""}` : "teach corners"}
                 className={`relative aspect-square rounded border transition ${
                   isSel
                     ? "border-cyan-400 bg-cyan-900/60"
@@ -179,14 +233,7 @@ export default function PlateMap() {
                 } disabled:cursor-not-allowed`}
               >
                 <span className="absolute left-1 top-0.5 font-mono text-[11px] text-slate-300">
-                  {blockLabel(br, bc)}
-                </span>
-                <span className="pointer-events-none absolute inset-0 flex items-center justify-center">
-                  <span className="grid grid-cols-4 gap-[2px] opacity-50">
-                    {Array.from({ length: 16 }).map((_, i) => (
-                      <span key={i} className="h-[3px] w-[3px] rounded-full bg-slate-500" />
-                    ))}
-                  </span>
+                  {b.label}
                 </span>
                 {z != null && (
                   <span className="absolute bottom-0.5 right-1 text-[9px] text-emerald-400">
@@ -198,8 +245,7 @@ export default function PlateMap() {
                 )}
               </button>
             );
-          })
-        )}
+          })}
       </div>
 
       <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -208,7 +254,7 @@ export default function PlateMap() {
           disabled={busy || !connected || !(sel || nearest)}
           className="rounded bg-cyan-800 px-2 py-1 hover:bg-cyan-700 disabled:opacity-40"
         >
-          Save focus Z → {keyLabel(sel || nearest)}
+          Save focus Z → {keyLabel(map, sel || nearest)}
         </button>
         {pos && (
           <span className="font-mono text-[10px] text-slate-400">
@@ -219,7 +265,7 @@ export default function PlateMap() {
 
       {!cornersSet && (
         <p className="mt-2 text-[11px] text-amber-400/80">
-          Teach the three corner wells — A1, A12, H1 — to map the whole plate.
+          Teach the three corner wells — {corners.tl} / {corners.tr} / {corners.bl} — to map the plate.
         </p>
       )}
       {cornersSet && !xyHomed && (

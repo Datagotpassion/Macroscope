@@ -281,7 +281,14 @@ class MockCamera(_Backend):
 
 
 def _make_backend() -> _Backend:
-    """优先真相机,失败则回退到 MockCamera。"""
+    """优先真相机,失败则回退到 MockCamera。
+
+    设 PLATESCOPE_FORCE_MOCK=1 可强制用 MockCamera —— 相机坏了/没接时,照样能用
+    合成帧干跑运动 (如巡扫 timelapse 的空跑验证),不被真相机的超时拖住。
+    """
+    if os.environ.get("PLATESCOPE_FORCE_MOCK"):
+        _log("[camera] PLATESCOPE_FORCE_MOCK 已设置 → 使用 MockCamera")
+        return MockCamera()
     try:
         return PiCameraBackend()
     except Exception as exc:  # picamera2 缺失 / 无相机硬件

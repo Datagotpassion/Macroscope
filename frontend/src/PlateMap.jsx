@@ -1,58 +1,24 @@
 import React from "react";
 import { stageStatus, stageMove } from "./api";
+import {
+  BLOCK_ROWS,
+  BLOCK_COLS,
+  PLATE_KEY,
+  two,
+  bkey,
+  blockLabel,
+  keyLabel,
+  loadPlateMap,
+  blockCenter as blockCenterFor,
+  cornersSet as cornersSetFor,
+} from "./plateModel";
 
-// 板面地图 (Phase 1):96 孔板 (A–H × 1–12) 按 4×4 分成 6 个成像方格 (2 行 × 3 列)。
-// 教 3 个角孔 A1 / A12 / H1 的 XY,用仿射插值算出每个孔 → 再算出 6 个方格中心。
-// 点方格 → 平台移到该格中心;每格可单独教一个对焦 Z。全部存 localStorage。
+// 板面地图 (Phase 1):点方格 → 平台移到该格中心;每格可单独教一个对焦 Z。
+// 模型/几何在 platemap.js (与巡扫 timelapse 共用)。全部存 localStorage。
 // 真实坐标依赖「先 home 一次」建立坐标系 (或用 Force move 临时建一个)。
-//
-// 若你的板不是 96 孔 / 4×4 分块,改下面三个常量即可。
-
-const WELL_ROWS = 8; // A–H
-const WELL_COLS = 12; // 1–12
-const BLOCK = 4; // 每个成像方格 = 4×4 孔
-const ROW_LETTERS = "ABCDEFGH";
-const BLOCK_ROWS = WELL_ROWS / BLOCK; // 2
-const BLOCK_COLS = WELL_COLS / BLOCK; // 3
-
-const PLATE_KEY = "platescope_platemap_v2";
-const two = (n) => Math.round(n * 100) / 100;
-
-// 每个成像方格用它左上角孔命名 (A1 / A5 / A9 / E1 / E5 / E9)。
-const blockLabel = (br, bc) => `${ROW_LETTERS[br * BLOCK]}${bc * BLOCK + 1}`;
-const bkey = (br, bc) => `${br},${bc}`;
-const keyLabel = (k) => {
-  if (!k) return "?";
-  const [br, bc] = k.split(",").map(Number);
-  return blockLabel(br, bc);
-};
-
-function loadMap() {
-  try {
-    const m = JSON.parse(localStorage.getItem(PLATE_KEY));
-    if (m && m.ref) return m;
-  } catch {
-    /* ignore */
-  }
-  return { ref: {}, z: {} }; // ref: {a1,a12,h1}; z: {"br,bc": number}
-}
-
-// 孔仿射:well(r,c) → (x,y)。A1=(0,0), A12=(0,11), H1=(7,0)。
-function wellAffine(ref) {
-  const { a1, a12, h1 } = ref;
-  if (!a1 || !a12 || !h1) return null;
-  const cvx = (a12.x - a1.x) / (WELL_COLS - 1);
-  const cvy = (a12.y - a1.y) / (WELL_COLS - 1);
-  const rvx = (h1.x - a1.x) / (WELL_ROWS - 1);
-  const rvy = (h1.y - a1.y) / (WELL_ROWS - 1);
-  return (r, c) => ({
-    x: two(a1.x + c * cvx + r * rvx),
-    y: two(a1.y + c * cvy + r * rvy),
-  });
-}
 
 export default function PlateMap() {
-  const [map, setMap] = React.useState(loadMap);
+  const [map, setMap] = React.useState(loadPlateMap);
   const [st, setSt] = React.useState(null);
   const [sel, setSel] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
@@ -85,15 +51,12 @@ export default function PlateMap() {
   const homed = (st?.homed || "").toLowerCase();
   const xyHomed = homed.includes("x") && homed.includes("y");
 
-  const well = wellAffine(map.ref);
-  // 方格中心 = 该 4×4 块的几何中心孔位。
-  const blockCenter = (br, bc) =>
-    well ? well(br * BLOCK + (BLOCK - 1) / 2, bc * BLOCK + (BLOCK - 1) / 2) : null;
+  const blockCenter = (br, bc) => blockCenterFor(map.ref, br, bc);
   const blockZ = (br, bc) => map.z[bkey(br, bc)];
-  const cornersSet = map.ref.a1 && map.ref.a12 && map.ref.h1;
+  const cornersSet = cornersSetFor(map.ref);
 
   const nearest = React.useMemo(() => {
-    if (!pos || !well) return null;
+    if (!pos || !cornersSet) return null;
     let best = null;
     let bestD = Infinity;
     for (let br = 0; br < BLOCK_ROWS; br++)

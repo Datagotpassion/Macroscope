@@ -7,20 +7,25 @@ import {
   saveMode,
   saveBytes,
 } from "./save";
-import { freshFrameBlob } from "./api";
+import { freshFrameBlob, stageMove, stageWait } from "./api";
+import { loadPlateMap, listBlocks, blockCenter, cornersSet } from "./plateModel";
 
-// 客户端定时拍摄 → 保存到本机文件夹 (Electron)。App 端跑计划,每次抓一帧写盘。
-// 文件名:「实验条件 - day # - 时间戳」。day# = 起始 day + 距开始的整天数。
+// 客户端定时拍摄 → 保存到本机文件夹 (Electron)。App 端跑计划,每次抓帧写盘。
+// 单点模式:「实验条件 - day # - 时间戳」。
+// 巡扫模式:每个周期走遍板面地图所有方格各拍一张,文件名加方格标签
+//           「实验条件 - A1 - day # - 时间戳」。day# = 起始 day + 距开始的整天数。
 
 const two = (n) => String(n).padStart(2, "0");
 const stamp = (d = new Date()) =>
   `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}_` +
   `${two(d.getHours())}-${two(d.getMinutes())}-${two(d.getSeconds())}`;
 
-// 组装文件名并去掉文件系统非法字符 (< > : " / \ | ? *)。
-function buildName(condition, dayNum, d = new Date()) {
-  const raw = `${(condition || "capture").trim()} - day ${dayNum} - ${stamp(d)}`;
-  return raw.replace(/[<>:"/\\|?*\n\r]/g, "").trim() + ".jpg";
+// 组装文件名并去掉文件系统非法字符 (< > : " / \ | ? *)。block 可选 (巡扫时的方格标签)。
+function buildName(condition, dayNum, block, d = new Date()) {
+  const parts = [(condition || "capture").trim()];
+  if (block) parts.push(block);
+  parts.push(`day ${dayNum}`, stamp(d));
+  return parts.join(" - ").replace(/[<>:"/\\|?*\n\r]/g, "").trim() + ".jpg";
 }
 
 // 运行状态持久化 key —— 意外关闭 (App 崩溃 / 手滑关掉 / PC 重启) 后自动从原起点续拍。
@@ -37,6 +42,8 @@ export default function PcTimelapse({ experiment, setExperiment }) {
   const [lastFile, setLastFile] = React.useState("");
   const [err, setErr] = React.useState("");
   const [resumed, setResumed] = React.useState(false);
+  const [scan, setScan] = React.useState(false); // 巡扫模式:每周期走遍所有方格
+  const [scanInfo, setScanInfo] = React.useState(""); // 巡扫进度,如 "A5 (2/6)"
 
   // captureOnce 走 ref 取值,避免 setInterval 闭包读到过期 state(续拍恢复时尤其关键)。
   const startRef = React.useRef(0); // 本次运行开始时间戳 (ms)
@@ -45,6 +52,10 @@ export default function PcTimelapse({ experiment, setExperiment }) {
   const intervalRef = React.useRef(30); // 间隔 (分钟)
   const countRef = React.useRef(0); // 已拍张数
   const timerRef = React.useRef(null);
+  const scanRef = React.useRef(false); // 巡扫开关 (给 setInterval 闭包用)
+  const scanBusyRef = React.useRef(false); // 一圈巡扫进行中,防止周期叠加
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   React.useEffect(() => {
     expRef.current = experiment;
@@ -52,6 +63,9 @@ export default function PcTimelapse({ experiment, setExperiment }) {
   React.useEffect(() => {
     intervalRef.current = Math.max(1, Number(intervalMin) || 1);
   }, [intervalMin]);
+  React.useEffect(() => {
+    scanRef.current = scan;
+  }, [scan]);
 
   // 把运行状态写盘 (localStorage 在 Electron 里跨重启保留)。每次拍成功都刷新计数/时间戳。
   const persist = () => {
@@ -64,6 +78,7 @@ export default function PcTimelapse({ experiment, setExperiment }) {
           intervalMin: intervalRef.current,
           startEpoch: startRef.current,
           count: countRef.current,
+          scan: scanRef.current,
           running: true,
         })
       );
@@ -105,10 +120,55 @@ export default function PcTimelapse({ experiment, setExperiment }) {
     }
   };
 
+  // 巡扫一圈:依次走每个成像方格 → 到该格对焦 Z → 拍一帧 → 存 (文件名带方格标签)。
+  const scanOnce = async () => {
+    if (scanBusyRef.current) return; // 上一圈还没扫完就跳过本次触发,避免运动叠加
+    const map = loadPlateMap();
+    if (!cornersSet(map.ref)) {
+      setErr("plate map: teach corners A1 / A12 / H1 first");
+      return;
+    }
+    scanBusyRef.current = true;
+    const blocks = listBlocks();
+    const dn = dayNumber();
+    try {
+      for (let i = 0; i < blocks.length; i++) {
+        const b = blocks[i];
+        const p = blockCenter(map.ref, b.br, b.bc);
+        if (!p) continue;
+        setScanInfo(`${b.label} (${i + 1}/${blocks.length})`);
+        try {
+          await stageMove({ x: p.x, y: p.y, feed: 3000 });
+          const z = map.z[b.key];
+          if (z != null) await stageMove({ z, feed: 600 });
+          await stageWait(); // 等运动队列清空 (停稳)
+          await sleep(400); // 再等机械振动衰减
+          const name = buildName(expRef.current, dn, b.label);
+          const blob = await freshFrameBlob();
+          await saveBytes(name, await blob.arrayBuffer());
+          countRef.current += 1;
+          setCount(countRef.current);
+          setLastFile(name);
+          setErr("");
+        } catch (e) {
+          // 单个方格失败 (移动被拒 / 相机超时) 不停整圈:记一下,继续下一格
+          setErr(`${b.label}: ${e.message || String(e)}`);
+        }
+      }
+      persist();
+    } finally {
+      scanBusyRef.current = false;
+      setScanInfo("");
+    }
+  };
+
+  // 单点 or 巡扫,由 scanRef 决定 (setInterval 闭包里取 ref,续拍恢复也对)。
+  const cycle = () => (scanRef.current ? scanOnce() : captureOnce());
+
   const beginLoop = (delayMs) => {
     setRunning(true);
-    captureOnce(); // 立即拍第一张
-    timerRef.current = setInterval(captureOnce, delayMs);
+    cycle(); // 立即拍一次 (整圈或单张)
+    timerRef.current = setInterval(cycle, delayMs);
   };
 
   const start = async () => {
@@ -122,6 +182,7 @@ export default function PcTimelapse({ experiment, setExperiment }) {
     startDayRef.current = Number(startDay);
     expRef.current = experiment;
     intervalRef.current = Math.max(1, Number(intervalMin));
+    scanRef.current = scan;
     persist();
     beginLoop(intervalRef.current * 60000);
   };
@@ -163,6 +224,8 @@ export default function PcTimelapse({ experiment, setExperiment }) {
       startRef.current = Number(saved.startEpoch) || Date.now();
       countRef.current = Number(saved.count) || 0;
       setCount(countRef.current);
+      scanRef.current = !!saved.scan;
+      setScan(!!saved.scan);
       setResumed(true);
       beginLoop(intervalRef.current * 60000);
     });
@@ -173,7 +236,11 @@ export default function PcTimelapse({ experiment, setExperiment }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const previewName = buildName(experiment || "condition", Number(startDay));
+  const previewName = buildName(
+    experiment || "condition",
+    Number(startDay),
+    scan ? "A1" : undefined
+  );
 
   return (
     <div className="space-y-2 rounded-lg border border-slate-700 p-4 text-sm">
@@ -225,6 +292,17 @@ export default function PcTimelapse({ experiment, setExperiment }) {
         </label>
       </div>
 
+      {/* 巡扫模式:每个周期走遍板面地图的所有方格,各拍一张 (需先在 Plate map 教好角) */}
+      <label className="flex items-center gap-2 text-xs text-slate-300">
+        <input
+          type="checkbox"
+          checked={scan}
+          onChange={(e) => setScan(e.target.checked)}
+          disabled={running}
+        />
+        Scan whole plate — visit every mapped block each interval
+      </label>
+
       {/* 文件名预览 */}
       <div className="truncate text-[11px] text-slate-500">
         {t("pcTlPreview", previewName)}
@@ -257,6 +335,9 @@ export default function PcTimelapse({ experiment, setExperiment }) {
               </span>
             )}
           </span>
+        )}
+        {running && scanInfo && (
+          <span className="text-xs text-cyan-400">▸ scanning {scanInfo}</span>
         )}
       </div>
 

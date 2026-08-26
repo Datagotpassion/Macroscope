@@ -200,6 +200,8 @@ export function stageForcePosition({ x, y, z } = {}) {
 
 export const stageHome = (axes = "XYZ") =>
   stagePost(`/api/stage/home?axes=${axes}`);
+// 等待运动队列清空 (M400) —— 巡扫每步移动后等停稳再拍。
+export const stageWait = () => stagePost("/api/stage/wait");
 export const stageStop = () => stagePost("/api/stage/stop");
 export const stageFirmwareRestart = () =>
   stagePost("/api/stage/firmware_restart");

@@ -325,6 +325,16 @@ async def stage_home(axes: str = "XYZ"):
     return {"ok": True}
 
 
+@app.post("/api/stage/wait")
+async def stage_wait():
+    """阻塞直到运动队列清空 (M400)。巡扫时每步移动后等停稳再拍。"""
+    try:
+        await asyncio.to_thread(stage.wait_moves)
+    except StageError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
 @app.post("/api/stage/stop")
 async def stage_stop():
     """急停 (需之后 firmware_restart 恢复)。"""

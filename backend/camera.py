@@ -307,8 +307,20 @@ class CameraController:
         self._backend = backend if backend is not None else _make_backend()
         self._lock = threading.Lock()
         self.is_mock = isinstance(self._backend, MockCamera)
+        # 有意的模拟 (PLATESCOPE_FORCE_MOCK 空跑) 和「真相机起不来被动回退」要区分开:
+        # 前者的帧可以存,后者的帧是假数据,timelapse 必须拒存。
+        self.forced_mock = (
+            self.is_mock and backend is None and bool(os.environ.get("PLATESCOPE_FORCE_MOCK"))
+        )
         self.roi_active = False
         self._fails = 0  # 连续抓取失败计数,用于软性自愈
+
+    @property
+    def kind(self) -> str:
+        """picamera2 / mock (被动回退,帧不可信) / mock-forced (有意空跑)。"""
+        if not self.is_mock:
+            return "picamera2"
+        return "mock-forced" if self.forced_mock else "mock"
 
     def capture_array(self, preview: bool = False) -> np.ndarray:
         """拍一帧返回 BGR numpy array。preview=True 用低分辨率 (lores)。
@@ -329,8 +341,13 @@ class CameraController:
                         self._backend.close()
                     except Exception:
                         pass
-                    self._backend = _make_backend()
-                    self.is_mock = isinstance(self._backend, MockCamera)
+                    # 运行中只重建真相机,绝不退回 MockCamera:否则之后每帧都「成功」返回
+                    # 合成图,timelapse 会把假图当真实数据存下来,看门狗也看不出异常。
+                    # 重建失败就继续报错,交给看门狗 / systemd 重启服务。
+                    try:
+                        self._backend = PiCameraBackend()
+                    except Exception as exc:
+                        _log(f"[camera] 重建真相机失败 ({exc.__class__.__name__}),继续报错等待重启")
                     self._fails = 0
                 raise
 

@@ -34,6 +34,7 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Camera"],  # 跨域 (Electron 渲染层) 读得到相机类型标记
 )
 
 camera = CameraController()
@@ -117,7 +118,8 @@ async def get_plate_image(annotate: bool = False, fresh: bool = False):
             wells = await asyncio.to_thread(detector.detect_wells, image)
         image = await asyncio.to_thread(detector.annotate, image, wells)
     jpeg = await asyncio.to_thread(_encode_jpeg, image)
-    return Response(content=jpeg, media_type="image/jpeg")
+    # X-Camera: 让 timelapse / 看门狗分辨这帧是不是真相机拍的 (mock = 假数据)
+    return Response(content=jpeg, media_type="image/jpeg", headers={"X-Camera": camera.kind})
 
 
 @app.get("/api/well/{label}/image")

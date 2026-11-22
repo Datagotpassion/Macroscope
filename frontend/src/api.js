@@ -117,9 +117,12 @@ export async function fetchLatestFrameBlob() {
   return r.blob();
 }
 
-// 强制新拍一帧并返回 JPEG blob (fresh=true,不做孔位检测) —— 供定时拍摄用。
+// 强制新拍一帧 (fresh=true,不做孔位检测) —— 供定时拍摄用。返回 { blob, camera }。
+// camera 来自响应头 X-Camera:picamera2 / mock-forced (有意空跑) / mock (真相机没起来,
+// 后端被动回退成合成图)。mock 直接抛错 —— 绝不能把合成图当实验数据存下来。
+// 旧版后端没有这个头 → camera 为 null,照常放行。
 // 带超时:相机卡死时不让这次抓取无限挂起(否则会拖住整个定时任务)。
-export async function freshFrameBlob(timeoutMs = 30000) {
+export async function freshFrame(timeoutMs = 30000) {
   const ctrl = new AbortController();
   const to = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -128,7 +131,13 @@ export async function freshFrameBlob(timeoutMs = 30000) {
       { signal: ctrl.signal }
     );
     if (!r.ok) throw new Error("capture failed");
-    return await r.blob();
+    const camera = r.headers.get("X-Camera");
+    if (camera === "mock") {
+      throw new Error(
+        "camera fell back to MockCamera (real camera not working) — frame NOT saved"
+      );
+    }
+    return { blob: await r.blob(), camera };
   } catch (e) {
     // 把 AbortController 那句难懂的 "signal is aborted without reason" 换成人话:
     // 这次抓取超过 timeoutMs 没回来(多半是网络抖动/相机卡了一下),本帧跳过、下轮继续。

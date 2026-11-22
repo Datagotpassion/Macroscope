@@ -33,8 +33,23 @@ giving_up=0
 
 echo "[watchdog] started: probe every ${INTERVAL}s; restart after ${THRESHOLD} fails; give up after ${MAX_RESTARTS} futile restarts"
 
+# A probe passes only if a frame comes back AND it came from the real camera.
+# If the real camera fails to start, the backend falls back to MockCamera and
+# serves synthetic frames with "X-Camera: mock" -- the camera is effectively
+# down, so count that as a failure too (an intentional dry run sends
+# "mock-forced", which passes).
+probe() {
+    local hdrs
+    hdrs=$(curl -sf --max-time "$TIMEOUT" -D - -o /dev/null "${URL}&t=$(date +%s)") || return 1
+    if printf '%s' "$hdrs" | tr -d '\r' | grep -qix 'x-camera: mock'; then
+        echo "[watchdog] backend is serving MockCamera frames (real camera did not start)"
+        return 1
+    fi
+    return 0
+}
+
 while true; do
-    if curl -sf --max-time "$TIMEOUT" "${URL}&t=$(date +%s)" -o /dev/null; then
+    if probe; then
         if [ "$giving_up" -eq 1 ]; then
             echo "[watchdog] camera recovered -> resuming normal watch"
             giving_up=0

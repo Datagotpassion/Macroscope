@@ -7,22 +7,33 @@ import {
   saveMode,
   saveBytes,
 } from "./save";
-import { freshFrameBlob, stageMove, stageWait } from "./api";
-import { loadSelectedPlate, listBlocks, blockCenter, cornersSet } from "./plateModel";
+import { freshFrame, stageMove, stageWait } from "./api";
+import {
+  loadStore,
+  loadSelectedPlate,
+  listBlocks,
+  blockCenter,
+  cornersSet,
+} from "./plateModel";
 
 // 客户端定时拍摄 → 保存到本机文件夹 (Electron)。App 端跑计划,每次抓帧写盘。
 // 单点模式:「实验条件 - day # - 时间戳」。
-// 巡扫模式:每个周期走遍板面地图所有方格各拍一张,文件名加方格标签
-//           「实验条件 - A1 - day # - 时间戳」。day# = 起始 day + 距开始的整天数。
+// 巡扫模式:每个周期走遍板面地图所有方格各拍一张,文件名加板名 + 方格标签
+//           「实验条件 - 板名 - A1 - day # - 时间戳」。day# = 起始 day + 距开始的整天数。
+// 巡扫开始时锁定当时选中的板,之后不跟随 Plate 页的选中变化。
 
 const two = (n) => String(n).padStart(2, "0");
 const stamp = (d = new Date()) =>
   `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}_` +
   `${two(d.getHours())}-${two(d.getMinutes())}-${two(d.getSeconds())}`;
 
-// 组装文件名并去掉文件系统非法字符 (< > : " / \ | ? *)。block 可选 (巡扫时的方格标签)。
-function buildName(condition, dayNum, block, d = new Date()) {
-  const parts = [(condition || "capture").trim()];
+// 组装文件名并去掉文件系统非法字符 (< > : " / \ | ? *)。
+// plate / block 可选 (巡扫时的板名 + 方格标签);mock=true (有意空跑的合成图) 加 MOCK 前缀。
+function buildName(condition, dayNum, { plate, block, mock } = {}, d = new Date()) {
+  const parts = [];
+  if (mock) parts.push("MOCK");
+  parts.push((condition || "capture").trim());
+  if (plate) parts.push(plate);
   if (block) parts.push(block);
   parts.push(`day ${dayNum}`, stamp(d));
   return parts.join(" - ").replace(/[<>:"/\\|?*\n\r]/g, "").trim() + ".jpg";
@@ -44,6 +55,7 @@ export default function PcTimelapse({ experiment, setExperiment, onRunningChange
   const [resumed, setResumed] = React.useState(false);
   const [scan, setScan] = React.useState(false); // 巡扫模式:每周期走遍所有方格
   const [scanInfo, setScanInfo] = React.useState(""); // 巡扫进度,如 "A5 (2/6)"
+  const [scanPlate, setScanPlate] = React.useState(""); // 巡扫锁定的板名 (显示用)
 
   // captureOnce 走 ref 取值,避免 setInterval 闭包读到过期 state(续拍恢复时尤其关键)。
   const startRef = React.useRef(0); // 本次运行开始时间戳 (ms)
@@ -54,6 +66,8 @@ export default function PcTimelapse({ experiment, setExperiment, onRunningChange
   const timerRef = React.useRef(null);
   const scanRef = React.useRef(false); // 巡扫开关 (给 setInterval 闭包用)
   const scanBusyRef = React.useRef(false); // 一圈巡扫进行中,防止周期叠加
+  const plateIdRef = React.useRef(null); // 巡扫锁定的板 id
+  const plateNameRef = React.useRef(""); // 锁定时的板名 (整次运行的文件名都用它)
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -82,6 +96,8 @@ export default function PcTimelapse({ experiment, setExperiment, onRunningChange
           startEpoch: startRef.current,
           count: countRef.current,
           scan: scanRef.current,
+          plateId: plateIdRef.current,
+          plateName: plateNameRef.current,
           running: true,
         })
       );
@@ -107,10 +123,20 @@ export default function PcTimelapse({ experiment, setExperiment, onRunningChange
     Number(startDayRef.current) +
     Math.floor((Date.now() - startRef.current) / 86400000);
 
+  // 巡扫锁定的板:开始时记下 id,之后每圈按 id 重新取 (中途对这块板重新教角能生效),
+  // 但不跟随 Plate 页的「当前选中」—— 否则中途去教别的板,巡扫会悄悄换板。
+  const lockPlate = (p) => {
+    plateIdRef.current = p.id;
+    plateNameRef.current = p.name || "";
+    setScanPlate(p.name || "");
+  };
+  const lockedPlate = () =>
+    loadStore().plates.find((p) => p.id === plateIdRef.current) || null;
+
   const captureOnce = async () => {
     try {
-      const name = buildName(expRef.current, dayNumber());
-      const blob = await freshFrameBlob();
+      const { blob, camera } = await freshFrame();
+      const name = buildName(expRef.current, dayNumber(), { mock: camera === "mock-forced" });
       await saveBytes(name, await blob.arrayBuffer());
       countRef.current += 1;
       setCount(countRef.current);
@@ -126,9 +152,13 @@ export default function PcTimelapse({ experiment, setExperiment, onRunningChange
   // 巡扫一圈:依次走每个成像方格 → 到该格对焦 Z → 拍一帧 → 存 (文件名带方格标签)。
   const scanOnce = async () => {
     if (scanBusyRef.current) return; // 上一圈还没扫完就跳过本次触发,避免运动叠加
-    const map = loadSelectedPlate();
+    const map = lockedPlate();
+    if (!map) {
+      setErr(`stage map: plate "${plateNameRef.current}" was deleted — stop and restart the scan`);
+      return;
+    }
     if (!cornersSet(map.ref)) {
-      setErr("stage map: teach the selected plate's corners first");
+      setErr(`stage map: teach ${map.name}'s corners first`);
       return;
     }
     scanBusyRef.current = true;
@@ -146,8 +176,12 @@ export default function PcTimelapse({ experiment, setExperiment, onRunningChange
           if (z != null) await stageMove({ z, feed: 600 });
           await stageWait(); // 等运动队列清空 (停稳)
           await sleep(400); // 再等机械振动衰减
-          const name = buildName(expRef.current, dn, b.label);
-          const blob = await freshFrameBlob();
+          const { blob, camera } = await freshFrame();
+          const name = buildName(expRef.current, dn, {
+            plate: plateNameRef.current,
+            block: b.label,
+            mock: camera === "mock-forced",
+          });
           await saveBytes(name, await blob.arrayBuffer());
           countRef.current += 1;
           setCount(countRef.current);
@@ -177,6 +211,11 @@ export default function PcTimelapse({ experiment, setExperiment, onRunningChange
   const start = async () => {
     if (!currentFolderName()) return setErr(t("pcTlNeedFolder"));
     if (!experiment.trim()) return setErr(t("pcTlNeedCondition"));
+    if (scan) {
+      const p = loadSelectedPlate();
+      if (!cornersSet(p.ref)) return setErr(`stage map: teach ${p.name}'s corners first`);
+      lockPlate(p);
+    }
     setErr("");
     setResumed(false);
     countRef.current = 0;
@@ -195,6 +234,7 @@ export default function PcTimelapse({ experiment, setExperiment, onRunningChange
     timerRef.current = null;
     setRunning(false);
     setResumed(false);
+    setScanPlate("");
     clearPersist();
   };
 
@@ -229,6 +269,13 @@ export default function PcTimelapse({ experiment, setExperiment, onRunningChange
       setCount(countRef.current);
       scanRef.current = !!saved.scan;
       setScan(!!saved.scan);
+      if (saved.scan) {
+        lockPlate(
+          saved.plateId
+            ? { id: saved.plateId, name: saved.plateName }
+            : loadSelectedPlate() // 旧版保存的状态没记板 → 锁定当前选中的板
+        );
+      }
       setResumed(true);
       beginLoop(intervalRef.current * 60000);
     });
@@ -242,7 +289,7 @@ export default function PcTimelapse({ experiment, setExperiment, onRunningChange
   const previewName = buildName(
     experiment || "condition",
     Number(startDay),
-    scan ? "A1" : undefined
+    scan ? { plate: running ? scanPlate : loadSelectedPlate().name, block: "A1" } : {}
   );
 
   return (
@@ -339,8 +386,11 @@ export default function PcTimelapse({ experiment, setExperiment, onRunningChange
             )}
           </span>
         )}
-        {running && scanInfo && (
-          <span className="text-xs text-cyan-400">▸ scanning {scanInfo}</span>
+        {running && scan && scanPlate && (
+          <span className="text-xs text-cyan-400">
+            ▸ {scanPlate}
+            {scanInfo ? ` · scanning ${scanInfo}` : ""}
+          </span>
         )}
       </div>
 

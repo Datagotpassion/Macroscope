@@ -1,5 +1,5 @@
 import React from "react";
-import { stageStatus, stageMove } from "./api";
+import { stageStatus, stageMove, alignCalibration, alignCalibrate, plateFind } from "./api";
 import {
   FORMAT_LIST,
   STORE_KEY,
@@ -23,6 +23,7 @@ import {
 // 坐标持久化 (localStorage);真实定位依赖「先 home 一次」建立坐标系。
 
 const DEF_ENV = { minX: 0, minY: 0, maxX: 325, maxY: 230 }; // 兜底可达区
+const AUTO_FORMATS = [24, 48, 96]; // 自动找板支持的板型 (一帧里要看得到足够多的孔)
 
 export default function PlateMap() {
   const [store, setStore] = React.useState(loadStore);
@@ -30,6 +31,9 @@ export default function PlateMap() {
   const [sel, setSel] = React.useState(null); // 选中板内的方格 key
   const [busy, setBusy] = React.useState(false);
   const [err, setErr] = React.useState("");
+  const [cal, setCal] = React.useState(null); // 相机↔平台标定 (null = 未标定)
+  const [job, setJob] = React.useState(""); // 正在跑的长任务说明
+  const [info, setInfo] = React.useState(""); // 上一个任务的结果
 
   React.useEffect(() => {
     localStorage.setItem(STORE_KEY, JSON.stringify(store));
@@ -55,6 +59,14 @@ export default function PlateMap() {
 
   const plate = selectedPlate(store);
   const connected = st?.connected;
+
+  React.useEffect(() => {
+    if (!connected) return;
+    alignCalibration()
+      .then((c) => setCal(c && c.M ? c : null))
+      .catch(() => {});
+  }, [connected]);
+  const calOk = !!cal;
   const pos = st?.position;
   const homed = (st?.homed || "").toLowerCase();
   const xyHomed = homed.includes("x") && homed.includes("y");
@@ -94,14 +106,43 @@ export default function PlateMap() {
   const run = async (fn) => {
     setBusy(true);
     setErr("");
+    setInfo("");
     try {
       await fn();
     } catch (e) {
       setErr(e.message || String(e));
     } finally {
       setBusy(false);
+      setJob("");
     }
   };
+
+  // ── 自动找板 ──
+  const calibrate = () =>
+    run(async () => {
+      setJob("Calibrating camera ↔ stage… (~1 min, stage walks a few mm)");
+      const c = await alignCalibrate();
+      setCal(c);
+      setInfo(
+        `Calibrated: ${c.px_per_mm?.toFixed(2)} px/mm, repeatability ${c.repeatability_mm} mm`
+      );
+    });
+
+  const findPlate = () =>
+    run(async () => {
+      const id = plate.id; // 任务要跑 1–2 分钟,中途切换了选中板也写回这块板
+      const name = plate.name;
+      setJob(`Finding ${name}… (1–2 min, stage will move)`);
+      const r = await plateFind(plate.format);
+      setStore((s) => ({
+        ...s,
+        plates: s.plates.map((p) => (p.id === id ? { ...p, ref: r.ref } : p)),
+      }));
+      setInfo(
+        `Found ${name}: pitch ${r.pitch_mm} mm, corner angle ${r.angle_deg}°. ` +
+          `Camera is now at A1 — check the preview shows the A1 well.`
+      );
+    });
 
   // ── 多板管理 ──
   const updatePlate = (fn) =>
@@ -342,6 +383,37 @@ export default function PlateMap() {
         ))}
       </div>
 
+      {/* 自动:相机标定 (一次性) + 从 A1 附近自动定位三个角 */}
+      <div className="mb-2 flex flex-wrap items-center gap-1 text-xs">
+        <span className="text-slate-400">Auto:</span>
+        <button
+          onClick={calibrate}
+          disabled={busy || !connected || !xyHomed}
+          title="One-time: plate in view and lit; the stage walks a few mm in X and Y"
+          className={`rounded px-2 py-0.5 ${
+            calOk ? "bg-emerald-800 text-emerald-100" : "bg-slate-700 text-slate-300"
+          } hover:bg-slate-600 disabled:opacity-40`}
+        >
+          {calOk ? "Camera calibrated ✓" : "Calibrate camera"}
+        </button>
+        <button
+          onClick={findPlate}
+          disabled={
+            busy || !connected || !xyHomed || !calOk || !AUTO_FORMATS.includes(plate.format)
+          }
+          title={
+            AUTO_FORMATS.includes(plate.format)
+              ? "Move the camera so A1 is in the live preview (plate corner visible), then click"
+              : "Auto-find works for 24/48/96-well plates; teach corners manually for this format"
+          }
+          className="rounded bg-cyan-800 px-2 py-0.5 hover:bg-cyan-700 disabled:opacity-40"
+        >
+          Find plate (A1 in view)
+        </button>
+      </div>
+      {job && <p className="mb-2 animate-pulse text-[11px] text-cyan-300">{job}</p>}
+      {info && <p className="mb-2 text-[11px] text-emerald-400">{info}</p>}
+
       {/* 选中板的成像方格网 */}
       <div
         className="mb-2 grid gap-1"
@@ -404,7 +476,8 @@ export default function PlateMap() {
 
       {!cornersSet && (
         <p className="mt-2 text-[11px] text-amber-400/80">
-          Teach {plate.name}'s corners — {corners.tl} / {corners.tr} / {corners.bl} — to place it on the map.
+          Teach {plate.name}'s corners — {corners.tl} / {corners.tr} / {corners.bl} — to place it on the map,
+          or put {corners.tl} in the live preview and click Find plate.
         </p>
       )}
       {cornersSet && !xyHomed && (

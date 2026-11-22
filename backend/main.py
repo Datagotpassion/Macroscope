@@ -23,6 +23,7 @@ import beat
 import wellgrid
 from align import AlignError, Aligner
 from camera import CameraController, _log
+from platefind import PlateFinder
 from image_store import ImageStore
 from plate_detector import PlateDetector
 from scheduler import Scheduler
@@ -45,6 +46,7 @@ store = ImageStore()
 scheduler = Scheduler(camera, store)
 stage = StageController()
 aligner = Aligner(camera, stage)
+finder = PlateFinder(aligner)
 
 # 实时预览参数。PREVIEW_FPS 设得很高 = 实际不限速,跑多快取决于相机/编码/网络。
 PREVIEW_FPS = 120
@@ -424,15 +426,26 @@ def _require_real_camera() -> None:
         raise HTTPException(400, "相机不可用 (退回了 MockCamera),无法对准")
 
 
+# 标定/对准/找板都会连续移动平台,同一时间只允许一个在跑
+_motion_job = asyncio.Lock()
+
+
+async def _motion(fn, *args):
+    if _motion_job.locked():
+        raise HTTPException(409, "another alignment job is running")
+    async with _motion_job:
+        try:
+            return await asyncio.to_thread(fn, *args)
+        except (AlignError, StageError) as e:
+            raise HTTPException(400, str(e))
+
+
 @app.post("/api/align/calibrate")
-async def align_calibrate(step_mm: float = 3.0):
-    """一次性标定:平台 X/Y 各挪 step_mm,测画面平移,保存像素↔毫米矩阵。需板子在画面里。"""
+async def align_calibrate(step_mm: float = 2.0):
+    """一次性标定:平台沿 X/Y 各走几小步,测画面平移,保存像素↔毫米矩阵。需板子在画面里。"""
     _require_real_camera()
     step_mm = max(0.5, min(4.0, step_mm))  # 必须小于半个孔距 (96 孔板 4.5 mm)
-    try:
-        return await asyncio.to_thread(aligner.calibrate, step_mm)
-    except (AlignError, StageError) as e:
-        raise HTTPException(400, str(e))
+    return await _motion(aligner.calibrate, step_mm)
 
 
 @app.get("/api/align/calibration")
@@ -456,11 +469,20 @@ async def align_view(pitch_mm: float = 9.0, overlay: bool = False):
 async def align_center(pitch_mm: float = 9.0, tol_mm: float = 0.15, max_iter: int = 4):
     """把离画面中心最近的孔对准到中心 (平台小步移动,最多 max_iter 次)。"""
     _require_real_camera()
-    try:
-        res = await asyncio.to_thread(aligner.center_on_well, pitch_mm, tol_mm, max_iter)
-    except (AlignError, StageError) as e:
-        raise HTTPException(400, str(e))
+    res = await _motion(aligner.center_on_well, pitch_mm, tol_mm, max_iter)
     _log(f"[align] centered at {res['position']} residual={res['residual_mm']}mm moves={res['moves']}")
+    return res
+
+
+@app.post("/api/plate/find")
+async def plate_find(fmt: int = 96):
+    """自动找板:相机从 A1 附近出发 (A1 要在画面里),定位 A1/A12/H1,返回板面地图的三个角。
+
+    约 1–2 分钟。结束时停在 A1,方便在预览里确认。只支持 24/48/96 孔板。
+    """
+    _require_real_camera()
+    res = await _motion(finder.find, fmt)
+    _log(f"[plate] found {fmt}-well: ref={res['ref']} pitch={res['pitch_mm']} angle={res['angle_deg']}")
     return res
 
 

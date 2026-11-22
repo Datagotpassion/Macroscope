@@ -23,35 +23,47 @@ def render(pitch=148.0, angle_deg=1.0, origin=(507.0, 380.0), bright=True, seed=
     seed 决定孔里的杂物 (跟着板子走);noise_seed 决定传感器噪声 (每帧不同,默认同 seed)。
     keep(i, j) 返回 False 的孔不画 (模拟板边)。返回 (BGR 图, 真值基向量 a, b, 原点)。
     """
-    rng = np.random.default_rng(seed)
-    noise_rng = np.random.default_rng(seed if noise_seed is None else noise_seed)
-    bg, rim, inside = (200, 110, 235) if bright else (95, 190, 40)
-    img = np.full((H, W), bg, np.uint8)
     th = math.radians(angle_deg)
     a = pitch * np.array([math.cos(th), math.sin(th)])
     b = pitch * np.array([-math.sin(th), math.cos(th)])
     o = np.array(origin, float)
-    F = 16  # cv2 的亚像素绘制 (shift=4)
+    centers, seeds = [], []
     for i in range(-8, 9):
         for j in range(-8, 9):
-            c = o + i * a + j * b
-            if not (-pitch < c[0] < W + pitch and -pitch < c[1] < H + pitch):
-                continue
             if keep is not None and not keep(i, j):
                 continue
-            ctr = (int(round(c[0] * F)), int(round(c[1] * F)))
-            cv2.circle(img, ctr, int(0.43 * pitch * F), rim, -1, cv2.LINE_AA, 4)
-            cv2.circle(img, ctr, int(0.40 * pitch * F), inside, -1, cv2.LINE_AA, 4)
-            cv2.circle(img, ctr, int(0.37 * pitch * F), rim, 3, cv2.LINE_AA, 4)
-            for _ in range(rng.integers(0, 4)):  # 杂物 / 类器官
-                p = c + rng.uniform(-0.25, 0.25, 2) * pitch
-                ax = (int(rng.uniform(4, 0.12 * pitch)), int(rng.uniform(4, 0.08 * pitch)))
-                cv2.ellipse(img, (int(p[0]), int(p[1])), ax, rng.uniform(0, 180), 0, 360,
-                            int(rng.uniform(30, 160)), -1)
+            centers.append(o + i * a + j * b)
+            seeds.append(seed * 1000 + (i + 8) * 17 + (j + 8))
+    img = draw_wells(centers, pitch, bright, seeds, seed if noise_seed is None else noise_seed)
+    return img, a, b, o
+
+
+def draw_wells(centers, pitch, bright=True, seeds=None, noise_seed=0):
+    """在 W×H 画面里按给定圆心画孔 (两圈孔壁 + 孔里杂物),加照明梯度和传感器噪声。
+
+    seeds[k] 决定第 k 个孔里的杂物 (同一个孔每帧长得一样);noise_seed 决定这一帧的噪声。
+    """
+    bg, rim, inside = (200, 110, 235) if bright else (95, 190, 40)
+    img = np.full((H, W), bg, np.uint8)
+    F = 16  # cv2 的亚像素绘制 (shift=4)
+    for k, c in enumerate(centers):
+        if not (-pitch < c[0] < W + pitch and -pitch < c[1] < H + pitch):
+            continue
+        rng = np.random.default_rng(seeds[k] if seeds is not None else k)
+        ctr = (int(round(c[0] * F)), int(round(c[1] * F)))
+        cv2.circle(img, ctr, int(0.43 * pitch * F), rim, -1, cv2.LINE_AA, 4)
+        cv2.circle(img, ctr, int(0.40 * pitch * F), inside, -1, cv2.LINE_AA, 4)
+        cv2.circle(img, ctr, int(0.37 * pitch * F), rim, 3, cv2.LINE_AA, 4)
+        for _ in range(rng.integers(0, 4)):  # 杂物 / 类器官
+            p = c + rng.uniform(-0.25, 0.25, 2) * pitch
+            ax = (int(rng.uniform(4, 0.12 * pitch)), int(rng.uniform(4, 0.08 * pitch)))
+            cv2.ellipse(img, (int(p[0]), int(p[1])), ax, rng.uniform(0, 180), 0, 360,
+                        int(rng.uniform(30, 160)), -1)
     img = img.astype(np.float32) + np.linspace(-25, 25, W)[None, :]  # 照明梯度
-    img = cv2.GaussianBlur(img, (0, 0), 1.0) + noise_rng.normal(0, 4, img.shape)
+    noise = np.random.default_rng(noise_seed).normal(0, 4, img.shape)
+    img = cv2.GaussianBlur(img, (0, 0), 1.0) + noise
     img = np.clip(img, 0, 255).astype(np.uint8)
-    return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR), a, b, o
+    return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
 
 
 def truth_offset(a, b, o):

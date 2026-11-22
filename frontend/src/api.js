@@ -215,6 +215,14 @@ export const stageStop = () => stagePost("/api/stage/stop");
 export const stageFirmwareRestart = () =>
   stagePost("/api/stage/firmware_restart");
 
+// 自动对准:相机↔平台标定 (一次性) 和自动找板 (A1 在画面里时,定位 A1/A12/H1)
+export async function alignCalibration() {
+  const r = await fetch(u("/api/align/calibration"));
+  return r.json(); // 未标定时为 {}
+}
+export const alignCalibrate = () => stagePost("/api/align/calibrate");
+export const plateFind = (fmt) => stagePost(`/api/plate/find?fmt=${fmt}`);
+
 // 自动对焦:以当前 Z 为中心 ±z_range 小步扫描找清晰度峰值,返回 {best_z, curve}
 export function stageAutofocus({ z_range = 1.0, step = 0.1, feed = 120, cx, cy, r } = {}) {
   const p = new URLSearchParams({ z_range, step, feed });

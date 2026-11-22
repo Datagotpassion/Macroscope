@@ -40,6 +40,11 @@ MIN_CONTRAST = 2.0
 MIN_WELLS = 6
 MIN_PERIODICITY = 0.15
 
+# 格点上「有孔」的门槛:该点票数 / 画面里典型孔的票数。板边外、板子外的格点
+# 没有整圈孔壁,票数很低 (实测 ≤0.16);真孔因透视差异大 (实测 0.36–1.8)。
+# 单点只供显示;判断板边要看整排/整列的中位数 (见 platefind)。
+PRESENT_MIN = 0.3
+
 
 def _gray(img: np.ndarray) -> np.ndarray:
     g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
@@ -223,6 +228,21 @@ def find_well_lattice(
     nearest = origin + B @ ij
 
     inv = 1.0 / s
+
+    # 每个格点上有没有孔 (找板边/板角用):该点附近的最高票数 ÷ 画面里典型孔的票数。
+    # 只评估整个孔都在画面里的格点 —— 被画面边缘切掉一半的孔票数天然偏低。
+    rmax = max(1, int(round(0.15 * pitch)))  # 离画面中心远的孔因透视,票数峰会偏开一点
+    vmax = cv2.dilate(votes, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * rmax + 1,) * 2))
+    pts, pij = _lattice_points(nearest, a, b, w, h, 0.5 * pitch)
+    wells = []
+    if len(pts):
+        pv = cv2.remap(vmax, pts[:, 0].astype(np.float32).reshape(1, -1),
+                       pts[:, 1].astype(np.float32).reshape(1, -1), cv2.INTER_LINEAR)[0]
+        ref = float(np.median(np.sort(pv)[-max(1, len(pv) // 3):])) or 1.0
+        for (x, y), (i, j), v in zip(pts, pij, pv):
+            sc = float(v) / ref
+            wells.append({"ij": [int(i), int(j)], "xy": [float(x * inv), float(y * inv)],
+                          "score": round(sc, 3), "present": sc >= PRESENT_MIN})
     a_o, b_o = a * inv, b * inv
     nearest_o = nearest * inv
     center_o = np.array([W / 2.0, H / 2.0])
@@ -240,6 +260,8 @@ def find_well_lattice(
         "reliable": bool(
             contrast >= MIN_CONTRAST and n >= MIN_WELLS and periodicity >= MIN_PERIODICITY
         ),
+        # 格点 (ij 以离中心最近的孔为 [0,0],单位是基向量 a、b) 和它上面有没有孔
+        "wells": wells,
     }
 
 

@@ -225,12 +225,21 @@ class Aligner:
 
     # ── 对准 ──
 
-    def analyze(self, frame: np.ndarray, pitch_mm: float | None = None) -> dict:
-        """分析一帧:孔阵 + (已标定时) 换算成毫米的偏移和孔距。"""
-        exp = None
-        if self.cal and pitch_mm:
+    def analyze(self, frame: np.ndarray, pitch_mm: float | None = None,
+                expected_px: float | None = None) -> dict:
+        """分析一帧:孔阵 + (已标定时) 换算成毫米的偏移和孔距。
+
+        expected_px:同一块板上已经测到的孔距 (像素) —— 有就优先用它当预期值;
+        否则用「标准孔距 × 标定比例」粗估 (有几 % 误差,只适合第一帧)。
+        """
+        exp = expected_px
+        if exp is None and self.cal and pitch_mm:
             exp = pitch_mm * self.cal["px_per_mm"] * frame.shape[1] / self.cal["frame"][0]
         res = wellgrid.find_well_lattice(frame, expected_pitch_px=exp)
+        if res.get("ok") and expected_px and abs(res["pitch_px"] / expected_px - 1) > 0.08:
+            # 和这块板已知的孔距对不上 → 认错了周期,不能拿来对准
+            res["reliable"] = False
+            res["reason"] = f"pitch {res['pitch_px']:.1f}px vs expected {expected_px:.1f}px"
         if res.get("ok") and self.cal:
             mv = self.offset_to_move(res["offset"], frame.shape)
             res["move_mm"] = [round(float(mv[0]), 3), round(float(mv[1]), 3)]
@@ -239,13 +248,17 @@ class Aligner:
             )
         return res
 
-    def center_on_well(self, pitch_mm: float = 9.0, tol_mm: float = 0.15, max_iter: int = 4) -> dict:
-        """把离画面中心最近的孔对准到中心。返回最终平台坐标 (= 这个孔的位置) 和过程记录。"""
+    def center_on_well(self, pitch_mm: float = 9.0, tol_mm: float = 0.15, max_iter: int = 4,
+                       expected_px: float | None = None) -> dict:
+        """把离画面中心最近的孔对准到中心。返回最终平台坐标 (= 这个孔的位置) 和过程记录。
+
+        expected_px:这块板已知的孔距 (像素),给了识别更稳 (见 analyze)。
+        """
         self.matrix()  # 没标定就直接报错
         trace = []
         p = self.position()
         for it in range(max_iter + 1):
-            res = self.analyze(self.grab(), pitch_mm)
+            res = self.analyze(self.grab(), pitch_mm, expected_px)
             if not res.get("reliable"):
                 raise AlignError(
                     "wells not recognised in view "
@@ -259,7 +272,8 @@ class Aligner:
             if dist <= tol_mm:
                 w = p + mv  # 孔的位置 = 相机当前位置 + 剩下的一点残差
                 return {"ok": True, "position": {"x": round(w[0], 3), "y": round(w[1], 3)},
-                        "residual_mm": round(dist, 3), "moves": it, "trace": trace}
+                        "residual_mm": round(dist, 3), "moves": it, "trace": trace,
+                        "pitch_px": round(float(res["pitch_px"]), 2)}
             if dist > 0.6 * pitch_mm:
                 raise AlignError(f"computed correction {dist:.2f} mm is more than half a well pitch")
             if it == max_iter:

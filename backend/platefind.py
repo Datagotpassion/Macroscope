@@ -26,7 +26,9 @@ FORMATS = {96: (8, 12, 9.0), 48: (6, 8, 13.08), 24: (4, 6, 19.3)}
 
 LINE_OUT = 0.3   # 一整排/列格点的中位分数低于它 = 板外 (实测板外 ≤0.16,板内 ≥0.36)
 MAX_HOP = 4      # 一次最多跳几个孔再重新对准
-GEOM_TOL = 0.03  # 三角距离和孔距的相对误差上限
+GEOM_TOL = 0.03  # A1→H1 和 A1→A12 两条边算出的孔距,彼此相差的上限
+IMAGE_TOL = 0.08  # 和「画面孔距 ÷ 标定比例」相差的上限 —— 标定用 2 mm 小步,
+                  # 皮带弹性让小步走得偏少,长距离实测孔距比它小约 4%
 ANGLE_TOL = 3.0  # 行方向和列方向夹角偏离 90° 的上限 (度)
 
 
@@ -61,11 +63,13 @@ def edge_side(scores: dict[int, float]) -> tuple[int, int]:
 class PlateFinder:
     def __init__(self, aligner: Aligner):
         self.al = aligner
+        self.pitch_px: float | None = None  # 这块板在画面里的孔距,第一次对准时测得
 
     def _view(self, pitch_mm: float) -> dict:
-        res = self.al.analyze(self.al.grab(), pitch_mm)
+        res = self.al.analyze(self.al.grab(), pitch_mm, self.pitch_px)
         if not res.get("reliable"):
-            raise AlignError("wells not recognised in view — plate lit and roughly in focus?")
+            raise AlignError("wells not recognised in view — plate lit and roughly in focus? "
+                             f"({res.get('reason', 'low contrast')})")
         return res
 
     def _stage_vectors(self, res: dict, frame_shape) -> tuple[np.ndarray, np.ndarray]:
@@ -76,16 +80,23 @@ class PlateFinder:
 
     def _center(self, xy, pitch_mm) -> np.ndarray:
         self.al.goto(xy)
-        r = self.al.center_on_well(pitch_mm)
+        r = self.al.center_on_well(pitch_mm, expected_px=self.pitch_px)
+        if self.pitch_px is None:
+            self.pitch_px = r["pitch_px"]  # 之后每一帧都按这块板的实际孔距去认
         return np.array([r["position"]["x"], r["position"]["y"]])
 
     def _walk(self, start, step, n, pitch_mm, trace, label) -> np.ndarray:
-        """从 start 沿 step (一个孔距的位移) 走 n 个孔,每跳 ≤MAX_HOP 个孔重新对准。"""
-        p, done = np.array(start, float), 0
+        """从 start 沿 step (一个孔距的位移) 走 n 个孔,每跳 ≤MAX_HOP 个孔重新对准。
+
+        每跳完一次,用刚对准的实际位置更新步长 —— 长距离移动的实际孔距和标定
+        推算的差几 %,不更新的话误差会一跳跳累积。
+        """
+        p, done, step = np.array(start, float), 0, np.array(step, float)
         while done < n:
             hop = min(MAX_HOP, n - done)
-            p = self._center(p + hop * step, pitch_mm)
-            done += hop
+            q = self._center(p + hop * step, pitch_mm)
+            step = (q - p) / hop
+            p, done = q, done + hop
             trace.append({"step": f"{label} +{done}", "x": round(p[0], 3), "y": round(p[1], 3)})
         return p
 
@@ -104,11 +115,12 @@ class PlateFinder:
             raise AlignError(f"auto-find supports {sorted(FORMATS)}-well plates; teach other formats manually")
         rows, cols, pitch_mm = FORMATS[fmt]
         trace: list[dict] = []
+        self.pitch_px = None
 
-        # 1. 对准最近的孔,在画面里找板角
+        # 1. 对准最近的孔 (同时测出这块板在画面里的孔距),在画面里找板角
         w0 = self._center(self.al.position(), pitch_mm)
         frame = self.al.grab()
-        res = self.al.analyze(frame, pitch_mm)
+        res = self.al.analyze(frame, pitch_mm, self.pitch_px)
         if not res.get("reliable"):
             raise AlignError("wells not recognised in view — plate lit and roughly in focus?")
         sa, sb = self._stage_vectors(res, frame.shape)
@@ -139,16 +151,18 @@ class PlateFinder:
             if not self._beyond_is_edge(1, db, pitch_mm):
                 raise AlignError(f"expected the plate edge after {rows} wells along the other axis")
 
-        # 4. 几何检查:两条边长 ≈ 孔距 × (孔数−1),两边互相垂直
+        # 4. 几何检查:两条边算出的孔距彼此一致 (且和画面推算的大致相符),两边互相垂直
         row_vec, col_vec = h1 - a1, a12 - a1
         p_rows = np.linalg.norm(row_vec) / (rows - 1)
         p_cols = np.linalg.norm(col_vec) / (cols - 1)
         pitch_stage = (np.linalg.norm(sa) + np.linalg.norm(sb)) / 2
         ang = math.degrees(math.acos(abs(row_vec @ col_vec) / (np.linalg.norm(row_vec) * np.linalg.norm(col_vec))))
         problems = []
+        if abs(p_rows / p_cols - 1) > GEOM_TOL:
+            problems.append(f"A1→H1 pitch {p_rows:.3f} mm vs A1→A12 pitch {p_cols:.3f} mm")
         for name, p in (("A1→H1", p_rows), ("A1→A12", p_cols)):
-            if abs(p - pitch_stage) / pitch_stage > GEOM_TOL:
-                problems.append(f"{name} pitch {p:.3f} mm vs {pitch_stage:.3f} mm in the image")
+            if abs(p - pitch_stage) / pitch_stage > IMAGE_TOL:
+                problems.append(f"{name} pitch {p:.3f} mm vs {pitch_stage:.3f} mm from the image")
         if abs(ang - 90.0) > ANGLE_TOL:
             problems.append(f"rows and columns not perpendicular ({ang:.1f}°)")
         if problems:

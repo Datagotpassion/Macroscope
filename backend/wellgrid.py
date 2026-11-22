@@ -52,13 +52,16 @@ def _gray(img: np.ndarray) -> np.ndarray:
 
 
 def lattice_vectors(
-    gray: np.ndarray, pitch_range: tuple[float, float] | None = None
+    gray: np.ndarray, expected: float | None = None
 ) -> tuple[np.ndarray, np.ndarray, float] | None:
     """从高通图像的自相关里取网格基向量 a、b (像素) 和周期性强度 (0..1)。
 
-    pitch_range 给出孔距的可能范围 (像素);None 时在 0.06–0.6 倍图宽里找。
+    expected:预期孔距 (像素)。给了就只在 ±15% 里找,并选最接近它的周期 ——
+    孔底的手写记号、板架边缘等竖条纹也会在自相关里出峰 (实测 71/109 px 对 150 px
+    的真孔距),「选最短的强峰」会被它们骗。没给时在 0.06–0.6 倍图宽里选最短的强峰。
     a 取更「横」的那个且朝 +x,b 和 a 近似垂直且朝 +y。找不到返回 None。
     """
+    pitch_range = (0.85 * expected, 1.15 * expected) if expected else None
     h, w = gray.shape
     hp = gray - cv2.GaussianBlur(gray, (0, 0), max(4.0, w / 40))  # 去照明梯度
     hp = cv2.GaussianBlur(hp, (0, 0), 1.0)
@@ -90,8 +93,12 @@ def lattice_vectors(
     cand.sort(key=lambda c: -c[0])
     top = cand[0][0]
     strong = [c for c in cand if c[0] >= 0.6 * top]
-    # 第一个基向量:强峰里最短的 (避免把 2a 当成 a)
-    a = min(strong, key=lambda c: np.linalg.norm(c[1]))[1]
+    if expected:
+        # 第一个基向量:强峰里最接近预期孔距的
+        a = min(strong, key=lambda c: abs(np.linalg.norm(c[1]) - expected))[1]
+    else:
+        # 第一个基向量:强峰里最短的 (避免把 2a 当成 a)
+        a = min(strong, key=lambda c: np.linalg.norm(c[1]))[1]
     # 第二个:和 a 夹角 60°–120° 的最强峰
     b = None
     for s, v in cand:
@@ -160,7 +167,8 @@ def find_well_lattice(
 ) -> dict:
     """在一帧里找孔阵。坐标全部是输入图的像素坐标。
 
-    expected_pitch_px:已知的孔距 (像素,来自标定) → 只在 ±25% 里找,更不容易认错。
+    expected_pitch_px:已知的孔距 (像素) → 只在 ±15% 里找最接近的周期,更不容易认错。
+    最好用同一块板上刚测到的孔距,而不是「标准孔距 × 标定比例」(后者有几 % 误差)。
     返回 dict:ok / reason,a、b (基向量), pitch_px, angle_deg (a 相对图像 x 轴),
     nearest (离画面中心最近的孔中心), offset (nearest − 画面中心), n (参与投票的格点数),
     periodicity (自相关峰强 0..1), contrast (真孔位置 vs 半格错位位置的响应比, >1 越大越可靠),
@@ -172,11 +180,7 @@ def find_well_lattice(
     g = _gray(small)
     h, w = g.shape
 
-    rng = None
-    if expected_pitch_px:
-        p = expected_pitch_px * s
-        rng = (0.75 * p, 1.25 * p)
-    lv = lattice_vectors(g, rng)
+    lv = lattice_vectors(g, expected_pitch_px * s if expected_pitch_px else None)
     if lv is None:
         return {"ok": False, "reason": "no periodic well pattern in view"}
     a, b, periodicity = lv

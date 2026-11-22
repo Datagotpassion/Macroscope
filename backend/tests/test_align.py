@@ -137,6 +137,17 @@ def test_center_refuses_without_wells(tmp_path):
         al.center_on_well()
 
 
+def test_analyze_rejects_pitch_that_does_not_match_the_plate(tmp_path):
+    """已知这块板的孔距时,识别出的孔距对不上 (认错了周期) 就不能拿来对准。"""
+    al, stage, _ = make(tmp_path)
+    al.calibrate(step_mm=2.0)
+    frame = al.grab()
+    good = al.analyze(frame, 9.0, expected_px=al.camera.pitch_px)
+    assert good["reliable"]
+    bad = al.analyze(frame, 9.0, expected_px=al.camera.pitch_px * 1.13)
+    assert not bad["reliable"] and "expected" in bad["reason"]
+
+
 def test_center_requires_calibration(tmp_path):
     al, *_ = make(tmp_path)
     with pytest.raises(align.AlignError, match="not calibrated"):

@@ -116,6 +116,27 @@ def test_expected_pitch_from_calibration():
     assert abs(res["pitch_px"] - 148.0) / 148.0 < 0.01
 
 
+def with_distractors(img, period=108):
+    """真机上骗过识别的场景:左边黑色板架边 + 孔底一行行手写记号 (竖向重复)。"""
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    g[:, 60:230] = 15
+    for y in range(20, H, period):
+        cv2.line(g, (420, y), (560, y + 30), 10, 9)
+        cv2.line(g, (600, y + 40), (700, y + 10), 10, 9)
+    return cv2.cvtColor(g, cv2.COLOR_GRAY2BGR)
+
+
+@pytest.mark.parametrize("expected", [149.5, 143.0])  # 同板实测孔距 / 标定粗估
+def test_holder_edge_and_handwriting_need_expected_pitch(expected):
+    img, a, b, o = render(148.0, 1.0, (531.3, 341.7), keep=lambda i, j: i >= -1)
+    img = with_distractors(img)
+    res = wellgrid.find_well_lattice(img, expected_pitch_px=expected)
+    assert res["reliable"]
+    assert abs(res["pitch_px"] - 148.0) / 148.0 < 0.01, res["pitch_px"]
+    err = np.array(res["offset"]) - truth_offset(a, b, o)
+    assert np.hypot(*err) < 1.5
+
+
 def test_texture_without_wells_is_not_reliable():
     rng = np.random.default_rng(1)
     img = np.full((H, W), 150, np.uint8)

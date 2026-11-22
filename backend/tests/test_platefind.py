@@ -79,6 +79,18 @@ def test_real_machine_orientation_with_backlash(tmp_path):
     assert_corners(res, cam, stage, al)
 
 
+def test_long_moves_travel_more_than_small_step_calibration_says(tmp_path):
+    """真机:2 mm 小步标定出的比例,长距离实际孔距比它推算的小约 4.5%
+    (8.99/9.11 vs 9.43 mm)。跳孔要按实测更新步长,几何检查也不能因此误报。"""
+    M = camera_matrix(px_per_mm=15.9, rot_deg=0.0, mirrored=False)
+    rd, cd = unit(180.8), unit(270.8)
+    finder, al, stage, cam = setup(tmp_path, M, (213.5, 197.1), rd, cd, (1, 1), play=REAL_PLAY)
+    al.cal["M"] = (np.array(al.cal["M"]) / 1.045).tolist()  # 标定比例偏小 4.5%
+    al.cal["px_per_mm"] /= 1.045
+    res = finder.find(96)
+    assert_corners(res, cam, stage, al)
+
+
 def test_rotated_plate_and_mirrored_camera(tmp_path):
     # 板转 90° (A→H 朝 +Y,1→12 朝 −X),相机装歪 91° 且镜像
     M = camera_matrix(px_per_mm=16.4, rot_deg=91.0, mirrored=True)

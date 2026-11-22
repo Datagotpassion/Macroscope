@@ -20,6 +20,8 @@ from fastapi.staticfiles import StaticFiles
 
 import autofocus
 import beat
+import wellgrid
+from align import AlignError, Aligner
 from camera import CameraController, _log
 from image_store import ImageStore
 from plate_detector import PlateDetector
@@ -42,6 +44,7 @@ detector = PlateDetector()
 store = ImageStore()
 scheduler = Scheduler(camera, store)
 stage = StageController()
+aligner = Aligner(camera, stage)
 
 # 实时预览参数。PREVIEW_FPS 设得很高 = 实际不限速,跑多快取决于相机/编码/网络。
 PREVIEW_FPS = 120
@@ -411,6 +414,54 @@ async def run_autofocus(
         f"z0={z0:.2f} step={step} mock={camera.is_mock}"
     )
     return {"best_z": best and best["z"], "curve": curve, "z0": z0}
+
+
+# ── 自动对准 (相机↔平台标定 + 局部孔阵识别) ──
+
+
+def _require_real_camera() -> None:
+    if camera.kind == "mock":
+        raise HTTPException(400, "相机不可用 (退回了 MockCamera),无法对准")
+
+
+@app.post("/api/align/calibrate")
+async def align_calibrate(step_mm: float = 3.0):
+    """一次性标定:平台 X/Y 各挪 step_mm,测画面平移,保存像素↔毫米矩阵。需板子在画面里。"""
+    _require_real_camera()
+    step_mm = max(0.5, min(4.0, step_mm))  # 必须小于半个孔距 (96 孔板 4.5 mm)
+    try:
+        return await asyncio.to_thread(aligner.calibrate, step_mm)
+    except (AlignError, StageError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/align/calibration")
+async def align_calibration():
+    return aligner.cal or {}
+
+
+@app.get("/api/align/view")
+async def align_view(pitch_mm: float = 9.0, overlay: bool = False):
+    """只分析当前画面 (不动平台):孔阵、离中心最近的孔偏了多少。overlay=true 返回标注图。"""
+    _require_real_camera()
+    frame = await asyncio.to_thread(aligner.grab)
+    res = await asyncio.to_thread(aligner.analyze, frame, pitch_mm)
+    if overlay:
+        jpeg = await asyncio.to_thread(_encode_jpeg, wellgrid.draw_overlay(frame, res), 85)
+        return Response(content=jpeg, media_type="image/jpeg")
+    return res
+
+
+@app.post("/api/align/center")
+async def align_center(pitch_mm: float = 9.0, tol_mm: float = 0.15, max_iter: int = 4):
+    """把离画面中心最近的孔对准到中心 (平台小步移动,最多 max_iter 次)。"""
+    _require_real_camera()
+    try:
+        res = await asyncio.to_thread(aligner.center_on_well, pitch_mm, tol_mm, max_iter)
+    except (AlignError, StageError) as e:
+        raise HTTPException(400, str(e))
+    _log(f"[align] centered at {res['position']} residual={res['residual_mm']}mm moves={res['moves']}")
+    return res
 
 
 # ── WebSocket 实时预览 (F2) ──

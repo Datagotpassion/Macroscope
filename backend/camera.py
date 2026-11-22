@@ -111,11 +111,15 @@ class PiCameraBackend(_Backend):
         pass
 
     def capture_array(self, preview: bool = False) -> np.ndarray:
-        # 预览抓 lores (YUV420 -> BGR);静帧抓 main (RGB -> BGR)。全程不 reconfigure。
+        # 预览抓 lores (YUV420 -> BGR);静帧抓 main (已是 BGR)。全程不 reconfigure。
+        # 颜色顺序踩过坑 (2026-11 前红蓝一直是反的):
+        #   - picamera2 的 YUV420 是 I420 (Y,U,V 平面);OpenCV 的 COLOR_YUV420p2BGR 其实是
+        #     YV12 (Y,V,U),会把 U/V 用反,所以必须用 COLOR_YUV2BGR_I420;
+        #   - picamera2 的 "RGB888" 每像素内存顺序是 [B,G,R],正好就是 OpenCV 的 BGR,不用转。
         if preview and self._lores:
             try:
                 yuv = self._cam.capture_array("lores")
-                bgr = cv2.cvtColor(yuv, cv2.COLOR_YUV420p2BGR)
+                bgr = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
                 # lores 宽度可能被硬件对齐补齐 (stride padding):归一化回预览尺寸
                 if (bgr.shape[1], bgr.shape[0]) != PREVIEW_SIZE:
                     bgr = cv2.resize(
@@ -126,8 +130,7 @@ class PiCameraBackend(_Backend):
             except Exception as e:  # noqa: BLE001 —— lores 有问题就永久退回主流缩放,不影响定时拍摄
                 _log(f"[camera] lores 预览失败 ({e!r}),永久改用主流缩放预览")
                 self._lores = False
-        rgb = self._cam.capture_array("main")
-        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        bgr = np.ascontiguousarray(self._cam.capture_array("main"))  # RGB888 = [B,G,R]
         if preview:  # 无 lores 时的回退:抓主流再缩小到预览尺寸
             bgr = cv2.resize(bgr, PREVIEW_SIZE, interpolation=cv2.INTER_AREA)
         return bgr

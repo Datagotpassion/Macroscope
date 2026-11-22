@@ -33,6 +33,12 @@ SETTLE_S = 0.3        # 每次移动停稳后再等一会儿,让机械振动衰�
 DISCARD_FRAMES = 2    # 丢掉相机队列里可能在移动中曝光的旧帧
 FEED = 1200           # 对准/标定时的移动速度 (mm/min)
 
+# 单向接近:每次都先退到目标的 (−X, −Y) 方向这么远,再走到目标。
+# 实测 (2026-11-22) 平台有明显回程间隙/滞后:反向第一步丢 0.4–0.7 mm,同一坐标
+# 从两边接近差 0.7–1.6 mm。只要永远从同一方向接近,到位时滞后量一样,位置就可重复。
+# 这个距离要大于滞后带宽度,才能让「同向滞后」充分建立。
+ANTI_BACKLASH_MM = 2.5
+
 
 class AlignError(RuntimeError):
     """标定/对准失败 (看不到孔、偏差过大、不收敛、标定结果不合理…)。"""
@@ -139,56 +145,78 @@ class Aligner:
         return np.array([p["x"], p["y"]], float)
 
     def goto(self, xy) -> None:
-        self.stage.move(x=round(float(xy[0]), 3), y=round(float(xy[1]), 3), feed=FEED)
+        """单向接近:先到目标的 (−X,−Y) 侧 ANTI_BACKLASH_MM 处,再走到目标 (夹在行程下限内)。"""
+        x, y = float(xy[0]), float(xy[1])
+        lo = (self.stage.status().get("axis_minimum") or [0.0, 0.0])[:2]
+        px, py = max(x - ANTI_BACKLASH_MM, lo[0]), max(y - ANTI_BACKLASH_MM, lo[1])
+        self.stage.move(x=round(px, 3), y=round(py, 3), feed=FEED)
+        self.stage.move(x=round(x, 3), y=round(y, 3), feed=FEED)
         self.stage.wait_moves()
         time.sleep(SETTLE_S)
 
     # ── 标定 ──
 
-    def calibrate(self, step_mm: float = 3.0) -> dict:
-        """平台 X、Y 各挪 step_mm 测画面平移,算出并保存标定矩阵。结束时回到起点。
+    def calibrate(self, step_mm: float = 2.0, steps: int = 3) -> dict:
+        """沿 X、Y 各走 steps 步 (每步 step_mm,全部单向接近),测每步的画面平移,
+        取平均得到标定矩阵并保存。结束时回到起点,并检查回到起点的重复精度。
 
         step_mm 要明显小于半个孔距 (96 孔板 4.5 mm),否则规则孔阵会让平移测量有歧义。
         """
         p0 = self.position()
+        walks: dict[str, list[np.ndarray]] = {}
         try:
-            f0 = self.grab()
-            self.goto(p0 + [step_mm, 0])
-            fx = self.grab()
+            for ax, unit in (("x", np.array([1.0, 0.0])), ("y", np.array([0.0, 1.0]))):
+                frames = []
+                for k in range(steps + 1):
+                    self.goto(p0 + unit * step_mm * k)
+                    frames.append(self.grab())
+                walks[ax] = frames
             self.goto(p0)
-            fbx = self.grab()
-            self.goto(p0 + [0, step_mm])
-            fy = self.grab()
-            self.goto(p0)
-            fby = self.grab()
+            f_end = self.grab()
         finally:
             try:
                 self.goto(p0)
             except Exception:  # noqa: BLE001 — 尽量回原位,失败也不掩盖原错误
                 pass
+        f0 = walks["x"][0]
         lat = wellgrid.find_well_lattice(f0)
         if not lat.get("reliable"):
             raise AlignError("calibration needs the plate in view (wells not recognised) — lit and roughly in focus?")
         a, b = np.array(lat["a"]), np.array(lat["b"])
-        sx, sy = image_shift(f0, fx), image_shift(f0, fy)
-        dx = reduce_to_cell(sx[:2], a, b)
-        dy = reduce_to_cell(sy[:2], a, b)
-        M = np.column_stack([dx / step_mm, dy / step_mm])
+
+        cols, step_norms, matches = [], {}, []
+        for ax in ("x", "y"):
+            fr = walks[ax]
+            shifts = []
+            for i in range(steps):
+                dx, dy, resp = image_shift(fr[i], fr[i + 1])
+                shifts.append(reduce_to_cell((dx, dy), a, b))
+                matches.append(resp)
+            cols.append(np.mean(shifts, axis=0) / step_mm)
+            step_norms[ax] = [float(np.hypot(*s)) for s in shifts]
+        M = np.column_stack(cols)
         problems, info = check_matrix(M)
-        if min(sx[2], sy[2]) < 0.05:
-            problems.append(f"weak image match ({min(sx[2], sy[2]):.2f}) — plate in view and lit?")
+        if min(matches) < 0.05:
+            problems.append(f"weak image match ({min(matches):.2f}) — plate in view and lit?")
+        for ax, norms in step_norms.items():
+            spread = (max(norms) - min(norms)) / max(np.mean(norms), 1e-9)
+            if spread > 0.25:
+                problems.append(f"{ax.upper()} steps uneven ({spread:.0%}) — stage slipping or binding?")
         if problems:
             raise AlignError("calibration rejected: " + "; ".join(problems))
-        # 回到原位后画面应几乎不动 (检查回程间隙 / 丢步)
-        back = max(
-            math.hypot(*reduce_to_cell(image_shift(f0, f)[:2], a, b)) for f in (fbx, fby)
-        ) / info["px_per_mm"]
+        # 同一位置、同一接近方向:画面应几乎不动 (检查重复精度 / 丢步)
+        rep = math.hypot(*reduce_to_cell(image_shift(f0, f_end)[:2], a, b)) / info["px_per_mm"]
         cal = {
             "M": M.tolist(),
             "frame": [int(f0.shape[1]), int(f0.shape[0])],
             "step_mm": step_mm,
-            "return_error_mm": round(back, 3),
-            "match": [round(sx[2], 3), round(sy[2], 3)],
+            "steps": steps,
+            "step_px": {k: [round(v, 2) for v in n] for k, n in step_norms.items()},
+            "repeatability_mm": round(rep, 3),
+            "anti_backlash_mm": ANTI_BACKLASH_MM,
+            "match_min": round(min(matches), 3),
+            # 用板子 (标准孔距) 当尺子:平台每「指令毫米」实际走多少真实毫米 (仅供诊断)
+            "plate_pitch_px": round(float(lat["pitch_px"]), 2),
             "created": datetime.now().isoformat(timespec="seconds"),
             **info,
         }

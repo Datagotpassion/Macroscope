@@ -18,21 +18,36 @@ align.SETTLE_S = 0.0  # 测试里不用等机械振动
 
 
 class FakeStage:
-    def __init__(self, x=120.0, y=90.0, frozen=False):
-        self.p = np.array([x, y], float)
+    """cmd = 指令坐标 (Klipper 报的);p = 托架实际位置 (相机按它成像)。
+
+    play 模拟回程间隙/滞后 (每轴死区宽度,mm):指令离开死区后托架才跟上,
+    且总是落后半个死区 —— 和实测平台的表现一样 (反向第一步丢一截)。
+    """
+
+    def __init__(self, x=120.0, y=90.0, frozen=False, play=(0.0, 0.0)):
+        self.cmd = np.array([x, y], float)
+        self.p = self.cmd.copy()
         self.frozen = frozen  # True = 电机不动 (模拟没上电 / 丢步)
+        self.play = np.array(play, float)
 
     def status(self):
         return {"connected": True, "homed": "xyz",
-                "position": {"x": self.p[0], "y": self.p[1], "z": 10.0}}
+                "position": {"x": self.cmd[0], "y": self.cmd[1], "z": 10.0},
+                "axis_minimum": [0.0, 0.0, 0.0, 0.0]}
 
     def move(self, x=None, y=None, z=None, feed=0):
+        if x is not None:
+            self.cmd[0] = x
+        if y is not None:
+            self.cmd[1] = y
         if self.frozen:
             return
-        if x is not None:
-            self.p[0] = x
-        if y is not None:
-            self.p[1] = y
+        half = self.play / 2
+        for i in range(2):
+            if self.cmd[i] - self.p[i] > half[i]:
+                self.p[i] = self.cmd[i] - half[i]
+            elif self.p[i] - self.cmd[i] > half[i]:
+                self.p[i] = self.cmd[i] + half[i]
 
     def wait_moves(self):
         pass
@@ -70,42 +85,53 @@ class FakeCamera:
 
 
 def make(tmp_path, start=(120.0, 90.0), well0=(118.4, 91.7), **kw):
-    stage = FakeStage(*start, frozen=kw.pop("frozen", False))
+    stage = FakeStage(*start, frozen=kw.pop("frozen", False), play=kw.pop("play", (0.0, 0.0)))
     M = camera_matrix()
     cam = FakeCamera(stage, M, well0, **kw)
     return align.Aligner(cam, stage, cal_file=tmp_path / "cal.json"), stage, M
 
 
-def test_calibration_recovers_camera_matrix(tmp_path):
-    al, stage, M = make(tmp_path)
-    cal = al.calibrate(step_mm=3.0)
+# 实测平台:反向第一步丢 0.44 (X) / 0.70 (Y) mm
+REAL_PLAY = (0.9, 1.4)
+
+
+@pytest.mark.parametrize("play", [(0.0, 0.0), REAL_PLAY])
+def test_calibration_recovers_camera_matrix(tmp_path, play):
+    al, stage, M = make(tmp_path, play=play)
+    cal = al.calibrate(step_mm=2.0)
     est = np.array(cal["M"])
     assert np.abs(est - M).max() / np.abs(M).max() < 0.015, (est, M)
     assert cal["mirrored"] is True
-    assert cal["return_error_mm"] < 0.05
-    assert np.allclose(stage.p, [120.0, 90.0])  # 标定完回到起点
+    assert cal["repeatability_mm"] < 0.05
+    assert np.allclose(stage.cmd, [120.0, 90.0])  # 标定完回到起点
     assert (tmp_path / "cal.json").exists()
 
 
 def test_calibration_rejected_when_stage_does_not_move(tmp_path):
     al, *_ = make(tmp_path, frozen=True)
     with pytest.raises(align.AlignError, match="barely moved"):
-        al.calibrate(step_mm=3.0)
+        al.calibrate(step_mm=2.0)
     assert not (tmp_path / "cal.json").exists()
 
 
-def test_center_on_well_converges_to_the_well(tmp_path):
-    al, stage, _ = make(tmp_path, start=(120.0, 90.0), well0=(118.4, 91.7))
-    al.calibrate(step_mm=3.0)
+@pytest.mark.parametrize("play", [(0.0, 0.0), REAL_PLAY])
+def test_center_on_well_converges_to_the_well(tmp_path, play):
+    al, stage, _ = make(tmp_path, start=(120.0, 90.0), well0=(118.4, 91.7), play=play)
+    al.calibrate(step_mm=2.0)
     res = al.center_on_well(pitch_mm=9.0, tol_mm=0.1)
     assert res["ok"]
-    assert math.hypot(res["position"]["x"] - 118.4, res["position"]["y"] - 91.7) < 0.08, res
     assert res["moves"] <= 3
+    # 相机 (托架实际位置) 真的对准了孔
+    assert math.hypot(*(stage.p - [118.4, 91.7])) < 0.1, (stage.p, res)
+    # 记下的 (指令) 坐标可重复:换个地方再按同样方式回来,仍然对准
+    al.goto(stage.cmd + [7.0, -5.0])
+    al.goto([res["position"]["x"], res["position"]["y"]])
+    assert math.hypot(*(stage.p - [118.4, 91.7])) < 0.1, stage.p
 
 
 def test_center_refuses_without_wells(tmp_path):
     al, stage, _ = make(tmp_path)
-    al.calibrate(step_mm=3.0)
+    al.calibrate(step_mm=2.0)
     al.camera.wells = False
     with pytest.raises(align.AlignError, match="not recognised"):
         al.center_on_well()

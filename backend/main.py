@@ -511,6 +511,7 @@ async def scan_shot(
     pitch_mm: float = 9.0,
     af: bool = True,
     af_range: float = 3.0,
+    af_extend: bool = True,
     ref_sharp: float | None = None,
 ):
     """拍一格:移过去 → 对正 → 按需对焦 → 全分辨率照片。
@@ -518,12 +519,13 @@ async def scan_shot(
     照片在 body (JPEG);对正/对焦/最终高度等过程信息在 X-Shot 头 (JSON)。
     (x,y) 是格子中心,z 是预测的对焦高度;rows_dx/dy 是板上「往下一行」的平台方向,
     row_half/col_half 表示这格在行/列方向的孔数是偶数 (中心在两孔正中)。
+    af_extend=false:对焦只在 z ± af_range 里找,不往外扩 (板子已有对焦记忆时)。
     """
     _require_real_camera()
     img, info = await _motion(functools.partial(
         shooter.shoot, x, y, z, rows_dir=(rows_dx, rows_dy), row_half=row_half,
         col_half=col_half, pitch_mm=pitch_mm, autofocus=af, af_range=af_range,
-        ref_sharp=ref_sharp,
+        af_extend=af_extend, ref_sharp=ref_sharp,
     ))
     jpeg = await asyncio.to_thread(_encode_jpeg, img, 92)
     info["camera"] = camera.kind

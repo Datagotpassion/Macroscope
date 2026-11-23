@@ -136,6 +136,28 @@ def test_autofocus_extends_the_window_when_the_peak_is_at_its_edge(tmp_path):
     assert af["found"] and abs(af["z"] - 10.2) < 0.25, af
 
 
+def test_autofocus_without_extension_stays_inside_the_window(tmp_path):
+    # 板子已有对焦记忆:窗口外的峰 (另一个平面) 不去追,保持预测高度
+    sh, stage, cam, al = make(tmp_path, z_focus=10.2)
+    mask, _ = scan.content_mask(cam.capture_array(), al.analyze(cam.capture_array(), 9.0))
+    af = sh.autofocus(6.0, 1.5, mask, extend=False)
+    assert not af["found"] and af["z"] == 6.0, af
+    assert all(4.5 - 1e-9 <= z <= 7.5 + 1e-9 for z, _ in af["curve"]), af["curve"]
+
+
+def _curve(vals, z0=5.0):
+    return {z0 + 0.5 * i: v for i, v in enumerate(vals)}
+
+
+def test_interior_peak_ignores_slopes_and_noise():
+    # 一路上升 (焦点在窗口外) → 没有峰
+    assert scan._interior_peak(_curve([1.0, 1.2, 1.5, 2.0, 3.0])) is None
+    # 坡上的小疙瘩 (噪声) → 不算峰
+    assert scan._interior_peak(_curve([1.0, 1.3, 1.6, 1.65, 1.62, 2.0, 2.4])) is None
+    # 下沿更高 (另一个平面的坡),中间有真正的孔底峰 → 取中间的峰
+    assert scan._interior_peak(_curve([5.0, 3.0, 2.0, 2.6, 3.4, 2.7, 2.1])) == 4
+
+
 # ── 单格 ──
 
 def test_shoot_focuses_and_returns_info(tmp_path):

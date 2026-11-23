@@ -150,6 +150,7 @@ export default function PcTimelapse({ experiment, setExperiment, onRunningChange
             block: b.label,
             mock: camera === "mock-forced",
           }),
+        logName: safeName([expRef.current || "capture", plateNameRef.current, "scan log"], ".csv"),
         onProgress: setScanInfo,
         shouldStop: () => !timerRef.current, // 点了 Stop:拍完当前这格就收手
       });

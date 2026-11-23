@@ -27,6 +27,7 @@ Z_APPROACH_MM = 0.3     # Z 总是从下方接近目标 (丝杆回程间隙)
 ALIGN_TOL_MM = 0.5      # 格子中心偏差超过它才修正
 AF_STEP_MM = 0.5        # 对焦扫描步长 (清晰度峰宽 ~±1 mm)
 AF_MIN_GAIN = 1.3       # 峰值 / 窗口内最低值,低于它 = 没有对焦信号
+AF_MIN_PROM = 1.15      # 峰值 / 左右两侧各自最低值中较高的那个,低于它 = 坡上的噪声,不算峰
 SKIP_AF_RATIO = 0.8     # 预测高度处清晰度 ≥ 上次的 80% 就不重新对焦
 MIN_BRIGHTNESS = 25     # 画面平均亮度低于它 = 几乎全黑 (灯没开 / 相机异常)
 CONTENT_FACTOR = 4.0    # 孔内清晰度 > 孔间空白处 (噪声水平) × 它 = 「有内容的孔」
@@ -80,6 +81,26 @@ def content_mask(frame: np.ndarray, lattice: dict) -> tuple[np.ndarray | None, i
 
 def sharpness(frame: np.ndarray, mask: np.ndarray) -> float:
     return float(_lap(frame)[mask > 0].var())
+
+
+def _interior_peak(curve: dict[float, float]) -> int | None:
+    """清晰度曲线 (按 Z 排序) 里最高的「内部明显峰」的下标;没有就 None。
+
+    明显 = 比整条曲线最低值高 AF_MIN_GAIN 倍,且比左右两侧各自的最低值都高 AF_MIN_PROM 倍
+    (一路上升的坡上的噪声小疙瘩不算)。
+    """
+    vals = [curve[z] for z in sorted(curve)]
+    lo = max(min(vals), 1e-9)
+    best = None
+    for i in range(1, len(vals) - 1):
+        v = vals[i]
+        if v < vals[i - 1] or v < vals[i + 1] or v < AF_MIN_GAIN * lo:
+            continue
+        if v < AF_MIN_PROM * max(min(vals[:i]), min(vals[i + 1:])):
+            continue
+        if best is None or v > vals[best]:
+            best = i
+    return best
 
 
 def block_error(lattice: dict, M: np.ndarray, rows_dir_stage, row_half: bool, col_half: bool) -> np.ndarray:
@@ -151,10 +172,14 @@ class Shooter:
 
     # ── 对焦 ──
 
-    def autofocus(self, z_pred: float, half_range: float, mask: np.ndarray) -> dict:
+    def autofocus(self, z_pred: float, half_range: float, mask: np.ndarray,
+                  extend: bool = True) -> dict:
         """在 z_pred ± half_range 里从下往上扫,取「有内容的孔」清晰度的峰。
 
-        峰落在窗口边上就往那边再扩一个窗口 (一次)。找不到明显的峰就用 z_pred。
+        只认窗口「内部」、比两侧都明显高的局部峰,有几个取最高的 —— 窗口边上的高值多半是
+        另一个平面的坡 (实测 2026-11-23:孔口上的马克笔字迹在低 5 mm 处,A9 被它拉走)。
+        窗口里没有这样的峰、且 extend 时,往高的那边再扩一个窗口 (一次)。板子已有对焦记忆时
+        App 关掉扩展、缩小窗口,只在孔底平面附近找。找不到就用 z_pred。
         """
         zmax = (self.stage.status().get("axis_maximum") or [0, 0, 1e9])[2]
         lo, hi = max(0.0, z_pred - half_range), min(zmax, z_pred + half_range)
@@ -172,33 +197,34 @@ class Shooter:
                 curve[z] = sharpness(self.al.grab(), mask)
 
         run(lo, hi)
+        if extend and _interior_peak(curve) is None:
+            vals = [curve[z] for z in sorted(curve)]
+            i = int(np.argmax(vals))
+            if i == len(vals) - 1 and hi < zmax:     # 一路往上升 → 往上再扫
+                run(hi + AF_STEP_MM, min(zmax, hi + half_range))
+            elif i == 0 and lo > 0:                  # 一路往下升 → 往下再扫
+                run(max(0.0, lo - half_range), lo - AF_STEP_MM)
         zs = sorted(curve)
         vals = [curve[z] for z in zs]
-        i = int(np.argmax(vals))
-        if i == len(zs) - 1 and hi < zmax:       # 峰在窗口上沿 → 往上再扫
-            run(hi + AF_STEP_MM, min(zmax, hi + half_range))
-        elif i == 0 and lo > 0:                  # 峰在窗口下沿 → 往下再扫
-            run(max(0.0, lo - half_range), lo - AF_STEP_MM)
-        zs = sorted(curve)
-        vals = [curve[z] for z in zs]
-        i = int(np.argmax(vals))
-        gain = vals[i] / max(min(vals), 1e-9)
-        if gain < AF_MIN_GAIN or i in (0, len(zs) - 1):
-            return {"ran": True, "found": False, "z": z_pred, "gain": round(gain, 2),
-                    "reason": "no clear focus peak" if gain < AF_MIN_GAIN else "peak at the edge of the Z range",
-                    "curve": [[z, round(curve[z], 2)] for z in zs]}
+        out = {"ran": True, "gain": round(max(vals) / max(min(vals), 1e-9), 2),
+               "curve": [[z, round(curve[z], 2)] for z in zs]}
+        i = _interior_peak(curve)
+        if i is None:
+            return {**out, "found": False, "z": z_pred,
+                    "reason": "no clear focus peak" if out["gain"] < AF_MIN_GAIN
+                    else "no peak inside the Z window"}
         z = zs[i]
         den = vals[i - 1] - 2 * vals[i] + vals[i + 1]
         if den < 0:
             z += 0.5 * AF_STEP_MM * (vals[i - 1] - vals[i + 1]) / den
-        return {"ran": True, "found": True, "z": round(float(z), 3), "gain": round(gain, 2),
-                "curve": [[z_, round(curve[z_], 2)] for z_ in zs]}
+        return {**out, "found": True, "z": round(float(z), 3),
+                "gain": round(vals[i] / max(min(vals), 1e-9), 2)}
 
     # ── 单格 ──
 
     def shoot(self, x: float, y: float, z_pred: float, *, rows_dir=(1.0, 0.0),
               row_half: bool = True, col_half: bool = True, pitch_mm: float = 9.0,
-              autofocus: bool = True, af_range: float = 3.0,
+              autofocus: bool = True, af_range: float = 3.0, af_extend: bool = True,
               ref_sharp: float | None = None) -> tuple[np.ndarray, dict]:
         """拍一格。返回 (全分辨率 BGR 照片, 过程信息)。"""
         info: dict = {"x": x, "y": y, "z_pred": z_pred}
@@ -234,7 +260,7 @@ class Shooter:
             if ref_sharp and s_pred >= SKIP_AF_RATIO * ref_sharp:
                 info["af"] = {"ran": False, "reason": f"sharp enough ({s_pred:.0f} vs ref {ref_sharp:.0f})"}
             elif autofocus:
-                af = self.autofocus(z_pred, af_range, mask)
+                af = self.autofocus(z_pred, af_range, mask, extend=af_extend)
                 info["af"] = af
                 z = af["z"]
             else:

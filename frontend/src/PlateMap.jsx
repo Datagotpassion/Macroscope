@@ -27,10 +27,10 @@ import {
 const DEF_ENV = { minX: 0, minY: 0, maxX: 325, maxY: 230 }; // 兜底可达区
 
 // 「拍全板」结果:每格的最终高度、对焦/对正情况、成功与否
-const focusText = (info) => {
+const focusText = (info, focus) => {
   const af = info?.af;
   if (!af) return "–";
-  if (af.found) return `refocused`;
+  if (af.found) return focus === "off-plane" ? "refocused (off-plane, not saved)" : "refocused";
   if (af.ran) return `no peak, kept`;
   if (/sharp enough/.test(af.reason || "")) return "sharp, kept";
   if (/no wells with content/.test(af.reason || "")) return "empty wells";
@@ -50,6 +50,12 @@ function ScanSummary({ res }) {
         {res.plate}: {res.ok}/{res.results.length} blocks saved in {Math.round(res.ms / 1000)} s
         {res.failed ? ` — ${res.failed} failed` : ""}
       </div>
+      {res.shift && (
+        <div className="text-cyan-300">
+          Plate had moved by ({res.shift[0]}, {res.shift[1]}) mm — plate map updated, next scan
+          starts on target.
+        </div>
+      )}
       <table className="mt-1 w-full text-left text-slate-300">
         <thead className="text-slate-500">
           <tr>
@@ -65,7 +71,7 @@ function ScanSummary({ res }) {
             <tr key={r.label}>
               <td className="font-mono">{r.label}</td>
               <td>{r.info?.z ?? "–"}</td>
-              <td>{focusText(r.info)}</td>
+              <td>{focusText(r.info, r.focus)}</td>
               <td>{alignText(r.info)}</td>
               <td className={r.ok ? "text-emerald-400" : "text-red-400"}>
                 {r.ok ? "✓" : `✗ ${r.error}`}
@@ -224,6 +230,7 @@ export default function PlateMap({ experiment = "" }) {
       const res = await scanPlate(id, {
         nameFor: (b, camera) =>
           safeName([camera === "mock-forced" && "MOCK", experiment || "scan", name, b.label, fileStamp()]),
+        logName: safeName([experiment || "scan", name, "scan log"], ".csv"),
         onProgress: (t) => setJob(`Scanning ${name} — ${t}`),
         shouldStop: () => stopRef.current,
       });

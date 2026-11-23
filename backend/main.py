@@ -109,18 +109,21 @@ async def get_wells():
 
 
 @app.get("/api/plate/image")
-async def get_plate_image(annotate: bool = False, fresh: bool = False):
+async def get_plate_image(annotate: bool = False, fresh: bool = False, full: bool = False):
     """获取当前全板图像。
 
     默认复用最近一次 /api/capture 缓存的帧 (不重新拍摄),这样点一次「拍摄」
     只拍一张,而且显示的就是刚分析过的那一帧。fresh=True 时强制重新拍摄。
+    full=True:新拍一张 12MP (临时切相机模式;也用于 12MP 切换的压力测试),不进缓存。
     """
-    if fresh or store.latest_frame is None:
+    if full:
+        image = await asyncio.to_thread(camera.capture_full)
+    elif fresh or store.latest_frame is None:
         image = await asyncio.to_thread(camera.capture_array)
         store.buffer_frame(image, meta={})
     else:
         image = store.latest_frame
-    if annotate:
+    if annotate and not full:  # 缓存的孔位属于缓存帧,和 12MP 新帧对不上
         # 复用 /api/capture 已检测好的孔位,避免对同一帧重复跑 HoughCircles
         wells = store.latest_wells
         if wells is None:
@@ -513,6 +516,7 @@ async def scan_shot(
     af_range: float = 3.0,
     af_extend: bool = True,
     ref_sharp: float | None = None,
+    full_res: bool = False,
 ):
     """拍一格:移过去 → 对正 → 按需对焦 → 全分辨率照片。
 
@@ -520,12 +524,13 @@ async def scan_shot(
     (x,y) 是格子中心,z 是预测的对焦高度;rows_dx/dy 是板上「往下一行」的平台方向,
     row_half/col_half 表示这格在行/列方向的孔数是偶数 (中心在两孔正中)。
     af_extend=false:对焦只在 z ± af_range 里找,不往外扩 (板子已有对焦记忆时)。
+    full_res=true:最终照片拍 12MP (4056x3040,临时切相机模式),否则 3MP (2028x1520)。
     """
     _require_real_camera()
     img, info = await _motion(functools.partial(
         shooter.shoot, x, y, z, rows_dir=(rows_dx, rows_dy), row_half=row_half,
         col_half=col_half, pitch_mm=pitch_mm, autofocus=af, af_range=af_range,
-        af_extend=af_extend, ref_sharp=ref_sharp,
+        af_extend=af_extend, ref_sharp=ref_sharp, full_res=full_res,
     ))
     jpeg = await asyncio.to_thread(_encode_jpeg, img, 92)
     info["camera"] = camera.kind

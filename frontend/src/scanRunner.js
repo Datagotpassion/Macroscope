@@ -23,6 +23,23 @@ export const fileStamp = (d = new Date()) =>
 export const safeName = (parts, ext = ".jpg") =>
   parts.filter(Boolean).join(" - ").replace(/[<>:"/\\|?*\n\r]/g, "").trim() + ext;
 
+// 最终照片 12MP (4056x3040,Pi 端临时切相机模式) 还是 3MP (2028x1520)。记在本机,默认 12MP。
+const FULL_RES_KEY = "platescope_scan_12mp";
+export const getFullRes = () => {
+  try {
+    return localStorage.getItem(FULL_RES_KEY) !== "0";
+  } catch {
+    return true;
+  }
+};
+export const setFullRes = (on) => {
+  try {
+    localStorage.setItem(FULL_RES_KEY, on ? "1" : "0");
+  } catch {
+    /* 存不下就只在这次生效 */
+  }
+};
+
 const PITCH_MM = { 6: 39.12, 12: 26.01, 24: 19.3, 48: 13.08, 96: 9.0 };
 const TRIES = 2; // 每格当轮最多试几次;整圈结束后失败的再补一轮
 
@@ -249,6 +266,7 @@ async function scanLocked(plate, { nameFor, logName, onProgress = () => {}, shou
   const pitch_mm = PITCH_MM[plate.format] || 9.0;
   const blocks = listBlocks(plate);
   const results = new Map();
+  const full_res = getFullRes(); // 整次扫描用同一个分辨率
 
   const shootBlock = async (b, idx, retryPass) => {
     const cur = findPlate(plateId) || plate; // 每格都读最新的对焦记忆
@@ -274,6 +292,7 @@ async function scanLocked(plate, { nameFor, logName, onProgress = () => {}, shou
           af_range: plan.af_range,
           af_extend: plan.af_extend,
           ref_sharp: plan.ref_sharp,
+          full_res,
         });
         const file = nameFor(b, camera);
         await saveBytes(file, await blob.arrayBuffer());

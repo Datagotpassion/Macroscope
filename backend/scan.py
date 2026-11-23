@@ -225,8 +225,8 @@ class Shooter:
     def shoot(self, x: float, y: float, z_pred: float, *, rows_dir=(1.0, 0.0),
               row_half: bool = True, col_half: bool = True, pitch_mm: float = 9.0,
               autofocus: bool = True, af_range: float = 3.0, af_extend: bool = True,
-              ref_sharp: float | None = None) -> tuple[np.ndarray, dict]:
-        """拍一格。返回 (全分辨率 BGR 照片, 过程信息)。"""
+              ref_sharp: float | None = None, full_res: bool = False) -> tuple[np.ndarray, dict]:
+        """拍一格。返回 (BGR 照片, 过程信息)。full_res=True 拍 12MP (临时切相机模式),否则 3MP。"""
         info: dict = {"x": x, "y": y, "z_pred": z_pred}
         self.al.goto([x, y])
         self.z_goto(z_pred)
@@ -271,7 +271,10 @@ class Shooter:
             info["sharp"] = round(sharpness(self.al.grab(), mask), 2)
 
         # 拍照 + 检查
-        img = self.camera.capture_array(preview=False)
+        t0 = time.monotonic()
+        img = self.camera.capture_full() if full_res else self.camera.capture_array(preview=False)
+        info["size"] = [int(img.shape[1]), int(img.shape[0])]
+        info["capture_s"] = round(time.monotonic() - t0, 2)
         bright = float(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).mean())
         info["brightness"] = round(bright, 1)
         if bright < MIN_BRIGHTNESS:

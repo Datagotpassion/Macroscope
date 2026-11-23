@@ -50,6 +50,10 @@ STILL_SIZE = (
     int(os.environ.get("PLATESCOPE_STILL_H", 1520)),
 )
 
+# 12MP 全分辨率静帧 (capture_full):临时切到全分辨率传感器模式拍一张再切回。切过去后先丢掉
+# 几帧,让自动曝光/白平衡在新模式下稳定 (libcamera 会把上一模式的曝光带过去,丢帧只是保险)。
+FULL_SKIP_FRAMES = 2
+
 # 单孔 ROI 相对孔大小的倍数。1.0 = ROI 恰好等于孔 (跳动检测测试用);
 # 之前是 1.6 (带余量便于检视取景)。改这一个值即可还原。
 ROI_PADDING = 1.0
@@ -61,6 +65,7 @@ class _Backend:
     def configure_still(self) -> None: ...
     def configure_preview(self) -> None: ...
     def capture_array(self, preview: bool = False) -> np.ndarray: ...
+    def capture_full(self) -> np.ndarray: ...
     def set_roi(self, cx: float, cy: float, r: float) -> None: ...
     def clear_roi(self) -> None: ...
     def lock_exposure(self) -> None: ...
@@ -101,7 +106,8 @@ class PiCameraBackend(_Backend):
             self._cam.camera_properties.get("PixelArraySize", FULL_SIZE)
         )
         self._cam.configure(self._cfg)
-        self._cam.start()  # 全程只 start 一次
+        self._cam.start()  # 常驻配置只 start 一次 (capture_full 临时切走后会切回)
+        self._full_cfg = None  # 12MP 静帧配置,第一次 capture_full 时才建
 
     # 单一配置:configure_* 仅保留以兼容旧接口,不再做任何模式切换 (故意留空)。
     def configure_still(self) -> None:
@@ -134,6 +140,32 @@ class PiCameraBackend(_Backend):
         if preview:  # 无 lores 时的回退:抓主流再缩小到预览尺寸
             bgr = cv2.resize(bgr, PREVIEW_SIZE, interpolation=cv2.INTER_AREA)
         return bgr
+
+    def capture_full(self) -> np.ndarray:
+        """临时切到 12MP 全分辨率 (raw 4056x3040) 拍一张,再切回常驻的双流配置。
+
+        这是唯一会切模式的地方 —— 旧排线上切模式曾卡死相机 (见类开头的注释);换成 HDMI
+        延长线后 12MP 连拍 + 切模式实测通过 (2026-11-22)。只给「拍全板」的最终照片用,
+        预览/对正/对焦仍走常驻配置。无论成败都切回常驻配置;切回失败就抛错,由上层重建相机。
+        视场和常驻配置相同 (都是全传感器),只是像素多 4 倍。
+        """
+        if self._full_cfg is None:
+            self._full_cfg = self._cam.create_still_configuration(
+                main={"size": FULL_SIZE, "format": "RGB888"},
+                raw={"size": FULL_SIZE},
+                buffer_count=1,
+            )
+        self._cam.stop()
+        try:
+            self._cam.configure(self._full_cfg)
+            self._cam.start()
+            for _ in range(FULL_SKIP_FRAMES):
+                self._cam.capture_metadata()
+            return np.ascontiguousarray(self._cam.capture_array("main"))  # RGB888 = [B,G,R]
+        finally:
+            self._cam.stop()
+            self._cam.configure(self._cfg)
+            self._cam.start()
 
     def _max_crop(self) -> tuple[int, int, int, int]:
         """有效裁剪范围 (x_off, y_off, w, h);用 ScalerCropMaximum,回退到全阵列。"""
@@ -279,6 +311,9 @@ class MockCamera(_Backend):
             frame = np.clip(frame.astype(np.float32) * mod, 0, 255).astype(np.uint8)
         return frame
 
+    def capture_full(self) -> np.ndarray:
+        return self.capture_array(preview=False)  # 合成图本来就是全分辨率
+
     def close(self) -> None:  # pragma: no cover - 无资源可释放
         pass
 
@@ -353,6 +388,32 @@ class CameraController:
                         _log(f"[camera] 重建真相机失败 ({exc.__class__.__name__}),继续报错等待重启")
                     self._fails = 0
                 raise
+
+    def capture_full(self) -> np.ndarray:
+        """12MP 全分辨率静帧 (临时切传感器模式,拍完切回)。BGR。
+
+        切模式中途出错时相机处在未知配置,不等连续 3 次失败,立刻重建真相机再抛错。
+        切模式会把硬件 ROI 复位成全画面。
+        """
+        with self._lock:
+            try:
+                frame = self._backend.capture_full()
+                self._fails = 0
+                return frame
+            except Exception:
+                if not self.is_mock:
+                    _log("[camera] 12MP 拍摄失败,重建相机后端…")
+                    try:
+                        self._backend.close()
+                    except Exception:
+                        pass
+                    try:
+                        self._backend = PiCameraBackend()
+                    except Exception as exc:
+                        _log(f"[camera] 重建真相机失败 ({exc.__class__.__name__}),继续报错等待重启")
+                raise
+            finally:
+                self.roi_active = False
 
     def set_roi(self, cx: float, cy: float, r: float) -> None:
         """硬件数字变焦到某个孔 (供实时高清单孔检视)。"""

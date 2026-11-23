@@ -169,6 +169,17 @@ def test_shoot_focuses_and_returns_info(tmp_path):
     assert abs(info["z"] - 10.2) < 0.25 and abs(stage.z - info["z"]) < 1e-6
 
 
+def test_shoot_full_res_uses_the_12mp_capture(tmp_path):
+    sh, stage, cam, al = make(tmp_path, z_focus=10.2)
+    full = np.full((3040, 4056, 3), 120, np.uint8)
+    cam.capture_full = lambda: full
+    gap = np.array([118.4 + 4.5, 91.7 + 4.5])
+    img, info = sh.shoot(*gap, z_pred=10.2, full_res=True)
+    assert img is full and info["size"] == [4056, 3040]
+    img, info = sh.shoot(*gap, z_pred=10.2)  # 默认仍是常驻配置的静帧
+    assert info["size"] == [W, H]
+
+
 def test_shoot_skips_autofocus_when_sharp_enough(tmp_path):
     sh, stage, cam, al = make(tmp_path, z_focus=10.2)
     gap = np.array([118.4 + 4.5, 91.7 + 4.5])

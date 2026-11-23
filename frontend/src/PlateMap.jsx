@@ -1,6 +1,6 @@
 import React from "react";
 import { stageStatus, stageMove, alignCalibration, alignCalibrate, plateFind } from "./api";
-import { scanPlate, fileStamp, safeName, STORE_EVENT } from "./scanRunner";
+import { scanPlate, fileStamp, safeName, STORE_EVENT, getFullRes, setFullRes } from "./scanRunner";
 import { chooseFolder, currentFolderName } from "./save";
 import {
   FORMAT_LIST,
@@ -47,7 +47,12 @@ function ScanSummary({ res }) {
   return (
     <div className="mb-2 rounded border border-slate-700 p-2 text-[11px]">
       <div className={res.failed ? "text-amber-400" : "text-emerald-400"}>
-        {res.plate}: {res.ok}/{res.results.length} blocks saved in {Math.round(res.ms / 1000)} s
+        {res.plate}: {res.ok}/{res.results.length} blocks saved
+        {(() => {
+          const sz = res.results.find((r) => r.info?.size)?.info.size;
+          return sz ? ` (${sz[0]}×${sz[1]})` : "";
+        })()}{" "}
+        in {Math.round(res.ms / 1000)} s
         {res.failed ? ` — ${res.failed} failed` : ""}
       </div>
       {res.shift && (
@@ -106,6 +111,7 @@ export default function PlateMap({ experiment = "" }) {
   const [job, setJob] = React.useState(""); // 正在跑的长任务说明
   const [info, setInfo] = React.useState(""); // 上一个任务的结果
   const [scanning, setScanning] = React.useState(false); // 「拍全板」进行中 (显示 Stop)
+  const [fullRes, setFullResState] = React.useState(getFullRes); // 最终照片 12MP / 3MP
 
   React.useEffect(() => {
     localStorage.setItem(STORE_KEY, JSON.stringify(store));
@@ -524,6 +530,21 @@ export default function PlateMap({ experiment = "" }) {
             Stop
           </button>
         )}
+        <label
+          className="flex items-center gap-1 text-slate-300"
+          title="Save each block as 12MP (4056×3040) instead of 3MP (2028×1520). Also used by the timelapse scan."
+        >
+          <input
+            type="checkbox"
+            checked={fullRes}
+            disabled={busy}
+            onChange={(e) => {
+              setFullRes(e.target.checked);
+              setFullResState(e.target.checked);
+            }}
+          />
+          12MP
+        </label>
       </div>
       {job && <p className="mb-2 animate-pulse text-[11px] text-cyan-300">{job}</p>}
       {info && <p className="mb-2 text-[11px] text-emerald-400">{info}</p>}

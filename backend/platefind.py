@@ -30,6 +30,11 @@ GEOM_TOL = 0.03  # A1→H1 和 A1→A12 两条边算出的孔距,彼此相差的
 IMAGE_TOL = 0.08  # 和「画面孔距 ÷ 标定比例」相差的上限 —— 标定用 2 mm 小步,
                   # 皮带弹性让小步走得偏少,长距离实测孔距比它小约 4%
 ANGLE_TOL = 3.0  # 行方向和列方向夹角偏离 90° 的上限 (度)
+# 每个孔对准到多准就算数。画面测量本身很稳 (同一位置连拍 6 帧只差 0.007 mm),
+# 但平台每次到位有 ±0.2–0.3 mm 的随机误差 (单向接近也消不掉),要求 0.15 mm 会在
+# 原地来回修正、收敛不了 (2026-11-23 实测在 A1 修正 4 次仍 0.22 mm)。
+# 孔距 9 mm,一帧拍几十个孔,0.3 mm 对找板和拍照都足够。
+CENTER_TOL = 0.3
 
 
 def line_scores(res: dict, axis: int) -> dict[int, float]:
@@ -80,7 +85,7 @@ class PlateFinder:
 
     def _center(self, xy, pitch_mm) -> np.ndarray:
         self.al.goto(xy)
-        r = self.al.center_on_well(pitch_mm, expected_px=self.pitch_px)
+        r = self.al.center_on_well(pitch_mm, tol_mm=CENTER_TOL, expected_px=self.pitch_px)
         if self.pitch_px is None:
             self.pitch_px = r["pitch_px"]  # 之后每一帧都按这块板的实际孔距去认
         return np.array([r["position"]["x"], r["position"]["y"]])

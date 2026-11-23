@@ -48,23 +48,37 @@ class PlateCamera:
         return draw_wells(centers, self.pitch_px, seeds=seeds, noise_seed=self.frame_no)
 
 
-def setup(tmp_path, M, a1, row_dir, col_dir, start_offset_wells, play=(0.0, 0.0), jitter=(0.6, -0.4)):
+def setup(tmp_path, M, a1, row_dir, col_dir, start_offset_wells, play=(0.0, 0.0),
+          start_err=(0.6, -0.4), stage_jitter=0.0):
     a1 = np.array(a1, float)
-    start = a1 + 9.0 * (start_offset_wells[0] * row_dir + start_offset_wells[1] * col_dir) + jitter
+    start = a1 + 9.0 * (start_offset_wells[0] * row_dir + start_offset_wells[1] * col_dir) + start_err
     stage = FakeStage(*start, play=play)
     cam = PlateCamera(stage, M, a1, row_dir, col_dir)
     al = align.Aligner(cam, stage, cal_file=tmp_path / "cal.json")
     al.calibrate(step_mm=2.0)
+    stage.jitter = stage_jitter  # 标定之后才加随机到位误差 (真机标定时的重复精度是 0.075 mm)
     return platefind.PlateFinder(al), al, stage, cam
 
 
-def assert_corners(res, cam, stage, al):
+def assert_corners(res, cam, stage, al, tol=0.12):
     """找到的三角 (指令坐标) 再按同样方式走过去,相机必须真的对准对应的孔。"""
     for key, label in (("tl", "A1"), ("tr", "A12"), ("bl", "H1")):
         p = res["ref"][key]
         al.goto([p["x"], p["y"]])
         err = math.hypot(*(stage.p - cam.well(label)))
-        assert err < 0.12, (label, err, res)
+        assert err < tol, (label, err, res)
+
+
+def test_random_positioning_error_does_not_stall_centering(tmp_path):
+    """真机:每次到位随机偏 ±0.2–0.3 mm。对准要求太严 (0.15 mm) 时会原地来回修正、
+    收敛不了;找板按 CENTER_TOL (0.3 mm) 对准,能走完全程且三角仍然找对。"""
+    M = camera_matrix(px_per_mm=15.9, rot_deg=0.0, mirrored=False)
+    rd, cd = unit(180.8), unit(270.8)
+    finder, al, stage, cam = setup(tmp_path, M, (213.5, 197.1), rd, cd, (1, 1),
+                                   play=REAL_PLAY, stage_jitter=0.25)
+    res = finder.find(96)
+    # 每次走回去本身就有 ±0.25 mm 随机误差,再加对准时的误差
+    assert_corners(res, cam, stage, al, tol=0.8)
 
 
 def test_real_machine_orientation_with_backlash(tmp_path):

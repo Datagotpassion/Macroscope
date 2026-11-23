@@ -24,11 +24,13 @@ class FakeStage:
     且总是落后半个死区 —— 和实测平台的表现一样 (反向第一步丢一截)。
     """
 
-    def __init__(self, x=120.0, y=90.0, frozen=False, play=(0.0, 0.0)):
+    def __init__(self, x=120.0, y=90.0, frozen=False, play=(0.0, 0.0), jitter=0.0):
         self.cmd = np.array([x, y], float)
         self.p = self.cmd.copy()
         self.frozen = frozen  # True = 电机不动 (模拟没上电 / 丢步)
         self.play = np.array(play, float)
+        self.jitter = jitter  # 每次到位的随机误差 (mm),真机约 ±0.25
+        self.rng = np.random.default_rng(7)
 
     def status(self):
         return {"connected": True, "homed": "xyz",
@@ -48,6 +50,8 @@ class FakeStage:
                 self.p[i] = self.cmd[i] - half[i]
             elif self.p[i] - self.cmd[i] > half[i]:
                 self.p[i] = self.cmd[i] + half[i]
+        if self.jitter:
+            self.p += self.rng.uniform(-self.jitter, self.jitter, 2)
 
     def wait_moves(self):
         pass

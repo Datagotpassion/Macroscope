@@ -9,7 +9,7 @@ import {
 } from "./save";
 import { freshFrame } from "./api";
 import { loadSelectedPlate, cornersSet } from "./plateModel";
-import { scanPlate, fileStamp, safeName } from "./scanRunner";
+import { scanPlate, fileStamp, safeName, SCAN_LOG_SUFFIX } from "./scanRunner";
 
 // 客户端定时拍摄 → 保存到本机文件夹 (Electron)。App 端跑计划,每次抓帧写盘。
 // 单点模式:「实验条件 - day # - 时间戳」。
@@ -152,7 +152,7 @@ export default function PcTimelapse({ experiment, setExperiment, onRunningChange
             block: b.label,
             mock: camera === "mock-forced",
           }),
-        logName: safeName([expRef.current || "capture", plateNameRef.current, "scan log v2"], ".csv"),
+        logName: safeName([expRef.current || "capture", plateNameRef.current, SCAN_LOG_SUFFIX], ".csv"),
         onProgress: setScanInfo,
         shouldStop: () => !timerRef.current, // 点了 Stop:拍完当前这格就收手
       });
@@ -163,7 +163,11 @@ export default function PcTimelapse({ experiment, setExperiment, onRunningChange
       const bad = res.results.filter((r) => !r.ok);
       const notes = [];
       if (bad.length) notes.push(`${bad.length} block(s) failed — ` + bad.map((r) => `${r.label}: ${r.error}`).join("; "));
-      if (res.corner && !res.corner.ok) notes.push(`A1 corner check failed: ${res.corner.reason}`);
+      if (res.corner && !res.corner.ok) {
+        const what = res.corner.status === "inconclusive" ? "inconclusive" : "FAILED";
+        notes.push(`A1 corner check ${what}: ${res.corner.reason}`);
+      }
+      if (res.logFailures) notes.push(`${res.logFailures} scan-log row(s) could not be written`);
       if (res.unverified) notes.push(`${res.unverified} photo(s) saved as UNVERIFIED (see scan log)`);
       setErr(notes.join(" · "));
       if (timerRef.current) persist(); // 已经停了就别把 running 状态写回去

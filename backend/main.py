@@ -566,6 +566,7 @@ async def scan_shot(
     r1: int | None = None,
     c0: int | None = None,
     c1: int | None = None,
+    align: bool = True,
 ):
     """拍一格:移过去 → 对正 → 按需对焦 → 全分辨率照片。
 
@@ -576,6 +577,7 @@ async def scan_shot(
     full_res=true:最终照片拍 12MP (4056x3040,临时切相机模式),否则 3MP (2028x1520)。
     cols_dx/dy (板上「往下一列」的平台方向) + plate_rows/cols + 这格覆盖的孔 r0..r1, c0..c1
     都给了才做板边核验;X-Shot 里的 position / focus 是这张照片的验收结果 (见 scan.py)。
+    align=false:只按地图拍 (不对正、不对焦、不做画面核验) —— 6/12 孔板用。
     """
     _require_real_camera()
     layout = {}
@@ -585,7 +587,7 @@ async def scan_shot(
     img, info = await _motion(functools.partial(
         shooter.shoot, x, y, z, rows_dir=(rows_dx, rows_dy), row_half=row_half,
         col_half=col_half, pitch_mm=pitch_mm, autofocus=af, af_range=af_range,
-        af_extend=af_extend, ref_sharp=ref_sharp, full_res=full_res, **layout,
+        af_extend=af_extend, ref_sharp=ref_sharp, full_res=full_res, align=align, **layout,
     ))
     jpeg = await asyncio.to_thread(_encode_jpeg, img, 92)
     info["camera"] = camera.kind

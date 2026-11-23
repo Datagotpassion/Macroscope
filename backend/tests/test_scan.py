@@ -243,8 +243,8 @@ class PlateCam3(PlateCamera):
         pass
 
 
-def make_plate(tmp_path):
-    M = camera_matrix(px_per_mm=15.9, rot_deg=0.0, mirrored=False)
+def make_plate(tmp_path, rot_deg=0.0, mirrored=False):
+    M = camera_matrix(px_per_mm=15.9, rot_deg=rot_deg, mirrored=mirrored)
     start = A1 + PITCH * (3 * RD + 5 * CD)  # 板中间,标定时满屏都是孔
     stage = Stage3(*start, z=10.0)
     cam = PlateCam3(stage, M, A1, RD, CD)
@@ -316,7 +316,7 @@ def test_focus_status_is_reported(tmp_path):
 def test_corner_check_passes_on_the_real_a1(tmp_path):
     sh, stage, cam = make_plate(tmp_path)
     res = sh.verify_corner(*(A1 + [0.5, -0.4]), 10.0, rows_dir=RD, cols_dir=CD)
-    assert res["ok"], res
+    assert res["ok"] and res["status"] == "passed", res
     assert res["edge_check"]["edges_seen_rows"] and res["edge_check"]["edges_seen_cols"]
     assert math.hypot(*(np.array(res["a1_error_mm"]) - [-0.5, 0.4])) < 0.35, res
 
@@ -326,13 +326,37 @@ def test_corner_check_catches_a_map_off_by_a_whole_well(tmp_path, shift):
     # 整行 / 整列错开:块级核验在画面短边方向看不到板边,板角核验两个方向都看得到
     sh, stage, cam = make_plate(tmp_path)
     res = sh.verify_corner(*(A1 + shift), 10.0, rows_dir=RD, cols_dir=CD)
-    assert not res["ok"], res
+    assert not res["ok"] and res["status"] == "mismatch", res
 
 
-def test_corner_check_fails_when_no_wells_are_seen(tmp_path):
+@pytest.mark.parametrize("rot", [0.0, 26.0, 45.0, 90.0])
+@pytest.mark.parametrize("mirrored", [False, True])
+def test_corner_check_with_rotated_or_mirrored_camera(tmp_path, rot, mirrored):
+    # 复核 (2026-11-23):相机转 26° 不镜像时,旧版按整排取中位数,把板角外侧对角方向本来就在
+    # 板外的格点当成「这一列没有孔」,正确的 A1 被误拒。现在按二维 (行, 列) 判断。
+    sh, stage, cam = make_plate(tmp_path, rot_deg=rot, mirrored=mirrored)
+    good = sh.verify_corner(*A1, 10.0, rows_dir=RD, cols_dir=CD)
+    assert good["status"] == "passed", good
+    for shift in (PITCH * RD, PITCH * CD):
+        bad = sh.verify_corner(*(A1 + shift), 10.0, rows_dir=RD, cols_dir=CD)
+        assert bad["status"] == "mismatch", (shift, bad)
+
+
+def test_corner_check_is_inconclusive_when_no_wells_are_seen(tmp_path):
+    # 看不清 ≠ 地图错了:认不出孔阵时是 inconclusive (App 不据此把照片标成 UNVERIFIED)
     sh, stage, cam = make_plate(tmp_path)
     res = sh.verify_corner(*(A1 - 40 * RD), 10.0, rows_dir=RD, cols_dir=CD)  # 板外很远
-    assert not res["ok"] and "not recognised" in res["reason"]
+    assert not res["ok"] and res["status"] == "inconclusive" and "not recognised" in res["reason"]
+
+
+def test_map_only_mode_skips_alignment_and_focus(tmp_path):
+    # 6/12 孔板:App 发 align=false,Pi 直接在地图位置和给定高度拍,不对正、不对焦
+    sh, stage, cam, al = make(tmp_path, z_focus=10.2)
+    frames_before = cam.n
+    _, info = sh.shoot(120.0, 90.0, 7.8, align=False, autofocus=False)
+    assert info["position"] == "unchecked" and info["focus"] == "unchecked"
+    assert info["z"] == 7.8 and abs(stage.z - 7.8) < 1e-9
+    assert cam.n == frames_before + 1  # 只拍了最终那一张,没有对正/对焦取帧
 
 
 def test_preflight_does_not_retry_z_on_other_errors(tmp_path):

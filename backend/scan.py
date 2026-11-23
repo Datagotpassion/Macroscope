@@ -29,7 +29,7 @@ import cv2
 import numpy as np
 
 from align import Aligner
-from platefind import LINE_OUT, line_scores
+from platefind import LINE_OUT
 
 Z_SETTLE_S = 0.3        # Z 停稳后再等一会儿
 Z_APPROACH_MM = 0.3     # Z 总是从下方接近目标 (丝杆回程间隙)
@@ -149,6 +149,10 @@ def edge_check(lattice: dict, M: np.ndarray, rows_dir, cols_dir, block, plate_di
     调用前画面中心应已对正到格子中心。画面中心在格点坐标里是 q (相对最近的孔),
     沿行方向的第 t 排格点对应板上第 round(Rc + s·(t − q)) 行 (Rc = 格子中心行号)。
     整体错开一整行/列时,本该在板外的那排会看到孔 (或反之) → 不一致。
+    按二维判断:每个格点先换算成板上的 (行, 列);评估某一行时只用「列号在板内」的格点,评估某一列
+    时只用「行号在板内」的格点 —— 板角外侧、对角方向本来就在板外的格点不能当成反对这一行/列的证据
+    (旧版按整排取中位数,相机转 26° 时正确的 A1 被误拒,2026-11-23 复核)。少于 2 个有效格点的
+    行/列不评估。
     注意:一帧约 7×5 孔,只评估整个孔都在画面里的格点;4×4 格子在画面短边方向的板边
     刚好在画面外,所以单格只能核验一个方向 —— 两个方向都要核验用 Shooter.verify_corner。
     返回 {ran, ok, edges_seen (看到了几排「应在板外」的格点), edges_seen_rows / _cols, mismatch}。
@@ -163,19 +167,30 @@ def edge_check(lattice: dict, M: np.ndarray, rows_dir, cols_dir, block, plate_di
     q = np.linalg.solve(np.column_stack([a, b]), -np.array(lattice["offset"]))
     r0, r1, c0, c1 = block
     rows, cols = plate_dims
+    rc, cc = (r0 + r1) / 2, (c0 + c1) / 2
+    pts = []  # (板上行号, 板上列号, 孔分数)
+    for w in lattice.get("wells", []):
+        ri = int(round(rc + sr * (w["ij"][kr] - q[kr])))
+        ci = int(round(cc + sc * (w["ij"][kc] - q[kc])))
+        pts.append((ri, ci, float(w["score"])))
     seen = {"row": 0, "column": 0}
     mismatch = []
-    for k, s, ctr, n, name in ((kr, sr, (r0 + r1) / 2, rows, "row"),
-                               (kc, sc, (c0 + c1) / 2, cols, "column")):
-        for t, score in sorted(line_scores(lattice, k).items()):
-            idx = int(round(ctr + s * (t - q[k])))
+    for name, key, n, other, other_n in (("row", 0, rows, 1, cols), ("column", 1, cols, 0, rows)):
+        groups: dict[int, list[float]] = {}
+        for p in pts:
+            if 0 <= p[other] < other_n:
+                groups.setdefault(p[key], []).append(p[2])
+        for idx, scores in sorted(groups.items()):
+            if len(scores) < 2:
+                continue
+            score = float(np.median(scores))
             expect_in = 0 <= idx < n
             seen_in = score >= LINE_OUT
             if not expect_in:
                 seen[name] += 1
             if expect_in != seen_in:
                 mismatch.append(f"{name} index {idx} (0-based): expected {'wells' if expect_in else 'off-plate'}, "
-                                f"saw {'wells' if seen_in else 'none'} (score {score:.2f})")
+                                f"saw {'wells' if seen_in else 'none'} (score {score:.2f}, n={len(scores)})")
     return {"ran": True, "ok": not mismatch, "edges_seen": seen["row"] + seen["column"],
             "edges_seen_rows": seen["row"], "edges_seen_cols": seen["column"], "mismatch": mismatch}
 
@@ -291,8 +306,15 @@ class Shooter:
 
         孔阵是周期的,单格对正只能保证「对到了最近的孔」;单格的板边核验在 4×4 格子里只看得到
         一个方向。这里在角孔上两个方向都看得到板边。相机先挪近最近的孔 (偏差 > 1/4 孔距时),
-        避免半格处的取整歧义。返回 {ok, reason, a1_error_mm (A1 实际位置 − 地图位置), edge_check}。
+        避免半格处的取整歧义 (0.25 孔距只是「先挪近」的触发条件,不是验收值)。
+        返回 {ok, status, reason, a1_error_mm (A1 实际位置 − 地图位置), edge_check}。status:
+          passed        两个方向都看到了板外,且没有任何不一致
+          mismatch      看到的板边和地图对不上 (有证据表明地图错了) → App 把这一圈的照片标 UNVERIFIED
+          inconclusive  看不清 (认不出孔阵 / 一侧板边不在画面里) → 孔身份未核验,但不算地图错了
         """
+        def result(status: str, reason: str, **kw) -> dict:
+            return {**kw, "ok": status == "passed", "status": status, "reason": reason}
+
         self.al.goto([x, y])
         self.z_goto(z)
         pos = np.array([x, y], float)
@@ -304,18 +326,18 @@ class Shooter:
             frame = self.al.grab()
             lat = self.al.analyze(frame, pitch_mm)
         if not lat.get("reliable"):
-            return {"ok": False, "reason": "wells not recognised at the mapped A1 corner"}
+            return result("inconclusive", "wells not recognised at the mapped A1 corner")
         a1 = pos + np.array(lat["move_mm"])
         out = {"a1_error_mm": [round(float(a1[0] - x), 3), round(float(a1[1] - y), 3)]}
         ec = edge_check(lat, self.al.matrix(frame.shape), rows_dir, cols_dir, (0, 0, 0, 0), plate_dims)
         out["edge_check"] = ec
         if not ec.get("ran"):
-            return {**out, "ok": False, "reason": ec.get("reason", "edge check did not run")}
+            return result("inconclusive", ec.get("reason", "edge check did not run"), **out)
         if not ec["ok"]:
-            return {**out, "ok": False, "reason": "plate edge not where the map puts A1: " + "; ".join(ec["mismatch"])}
+            return result("mismatch", "plate edge not where the map puts A1: " + "; ".join(ec["mismatch"]), **out)
         if not (ec["edges_seen_rows"] and ec["edges_seen_cols"]):
-            return {**out, "ok": False, "reason": "could not see the plate edge on both sides of A1"}
-        return {**out, "ok": True, "reason": "A1 has the plate edge on both outer sides"}
+            return result("inconclusive", "could not see the plate edge on both sides of A1", **out)
+        return result("passed", "A1 has the plate edge on both outer sides", **out)
 
     # ── 单格 ──
 
@@ -323,15 +345,24 @@ class Shooter:
               row_half: bool = True, col_half: bool = True, pitch_mm: float = 9.0,
               autofocus: bool = True, af_range: float = 3.0, af_extend: bool = True,
               ref_sharp: float | None = None, full_res: bool = False,
-              cols_dir=None, block=None, plate_dims=None) -> tuple[np.ndarray, dict]:
+              cols_dir=None, block=None, plate_dims=None,
+              align: bool = True) -> tuple[np.ndarray, dict]:
         """拍一格。返回 (BGR 照片, 过程信息 + 验收结果)。full_res=True 拍 12MP (临时切相机模式),否则 3MP。
 
         cols_dir (板上「往下一列 1→2」的平台方向)、block (r0, r1, c0, c1)、plate_dims (rows, cols)
         都给了才做板边核验 (edge_check);不给时 position 最多是 aligned。
+        align=False:只按地图拍 —— 不对正、不对焦、不做画面核验,直接在 (x, y, z_pred) 拍
+        (6/12 孔板一帧只有 1–2 个孔,孔阵识别做不了;position / focus 记为 unchecked)。
         """
         info: dict = {"x": x, "y": y, "z_pred": z_pred}
         self.al.goto([x, y])
         self.z_goto(z_pred)
+        if not align:
+            info.update(align_error_mm=None, residual_mm=None, position="unchecked",
+                        position_note="map-only mode (in-frame checks off)", content_wells=0,
+                        af={"ran": False, "reason": "map-only mode"}, focus="unchecked",
+                        z=round(float(z_pred), 3))
+            return self._final_shot(info, full_res)
 
         # 对正:格子中心偏了就修正一次
         frame = self.al.grab()
@@ -407,7 +438,10 @@ class Shooter:
         if mask is not None:
             info["sharp"] = round(sharpness(self.al.grab(), mask), 2)
 
-        # 拍照 + 检查
+        return self._final_shot(info, full_res)
+
+    def _final_shot(self, info: dict, full_res: bool) -> tuple[np.ndarray, dict]:
+        """最终照片 + 亮度检查。"""
         t0 = time.monotonic()
         img = self.camera.capture_full() if full_res else self.camera.capture_array(preview=False)
         info["size"] = [int(img.shape[1]), int(img.shape[0])]

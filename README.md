@@ -59,12 +59,23 @@ npm test             # 扫描判断逻辑 (scanLogic.js),node --test,不需要�
 
 ## 整板扫描的照片验收
 
-每张照片都带三项判断 (见 `backend/scan.py` 开头、`frontend/src/scanLogic.js`):
-孔位是否对正、孔身份是否核验 (每圈开拍前走到 A1 看外侧两边是不是板外)、焦面是否合格。
-不合格的**照样保存**,文件名加 ` - UNVERIFIED`,原因写进扫描记录 `… scan log v2.csv`。
-不合格的照片不进对焦记忆;只有「整圈完整 + 板角核验通过 + 每格都对正」时才自动修正板面地图
-(单轮 / 累计都有上限,扫描汇总里可撤销)。6 / 12 孔板一帧只有 1–2 个孔,画面核验做不了,
-照旧只按地图拍、不标 UNVERIFIED。
+每张照片都带这些判断 (见 `backend/scan.py` 开头、`frontend/src/scanLogic.js`),写进扫描记录
+`… scan log v3.csv` (每圈一个 `scan_id`;另有板角核验、扫后对焦复查、地图决策三种事件行):
+
+| 列 | 含义 |
+|---|---|
+| `position` | 孔位:confirmed (对正 + 本格板边一致) / aligned / edge_mismatch / unaligned / unchecked |
+| `identity` | 孔身份:verified (A1 板角核验通过) / partial / conflict / failed / unknown |
+| `focus_basis` | 焦面依据:peak (本格找到峰) / reference (和本格历史峰值比够清晰) / prediction (沿用预测高度) / … |
+| `unverified` | 有证据表明不对 → 文件名加 ` - UNVERIFIED` (照片照样保存) |
+| `analysis_ready` | 孔位对正 + 身份已核验 + 焦面有本格证据,可直接用于依赖孔内细节的分析 |
+
+- 板角核验:每圈开拍前走到地图上的 A1,看外侧两个方向是不是板外。「对不上」→ 整圈照片标 UNVERIFIED;
+  「看不清」→ 身份未核验,但不算地图错了。
+- 对焦记忆:≥2 格一致才算知道孔底平面;手教的 Z (Plate 页「Teach Z」) 单独存,只用于那一格。
+- 地图修正:只有「整圈完整 + 板角核验通过 + 每格都对正」时才自动修正,四角单轮 / 累计都有上限,
+  扫描汇总里可撤销。
+- 6 / 12 孔板一帧只有 1–2 个孔,画面核验做不了:Pi 只按地图位置和计划高度拍,不标 UNVERIFIED。
 
 ## 部署到树莓派
 

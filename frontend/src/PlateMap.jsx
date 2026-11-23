@@ -1,6 +1,14 @@
 import React from "react";
 import { stageStatus, stageMove, alignCalibration, alignCalibrate, plateFind } from "./api";
-import { scanPlate, fileStamp, safeName, STORE_EVENT, getFullRes, setFullRes } from "./scanRunner";
+import {
+  scanPlate,
+  fileStamp,
+  safeName,
+  STORE_EVENT,
+  SCAN_LOG_SUFFIX,
+  getFullRes,
+  setFullRes,
+} from "./scanRunner";
 import { chooseFolder, currentFolderName } from "./save";
 import {
   FORMAT_LIST,
@@ -65,19 +73,28 @@ function ScanSummary({ res, canUndo, onUndo }) {
         in {Math.round(res.ms / 1000)} s
         {res.failed ? ` — ${res.failed} failed` : ""}
         {res.unverified ? ` — ${res.unverified} saved as UNVERIFIED` : ""}
+        {` · ${res.analysisReady ?? 0}/${res.ok} analysis-ready`}
       </div>
+      {res.logFailures > 0 && (
+        <div className="text-red-400">
+          Scan log: {res.logFailures} row(s) could not be written — check the save folder
+        </div>
+      )}
       <div className={c?.ok ? "text-emerald-400" : "text-amber-400"}>
         {c == null
           ? "A1 corner check: not run (not possible for this plate format, or not supported by this Pi version)"
           : c.ok
           ? `A1 corner check passed (A1 off the map by ${c.a1_error_mm?.map((v) => v.toFixed(2)).join(", ")} mm)`
+          : c.status === "inconclusive"
+          ? `A1 corner check inconclusive: ${c.reason} — well identity not verified this round; map not changed`
           : `A1 corner check FAILED: ${c.reason} — photos marked UNVERIFIED; re-find the plate`}
       </div>
       {res.shift?.apply ? (
         <div className="text-cyan-300">
           Plate map corrected: blocks were off by ~({res.shift.mean[0]}, {res.shift.mean[1]}) mm
-          (up to {res.shift.max} mm
-          {res.shift.kind === "affine" ? ", incl. a slight rotation/scale" : ""}) — next scan
+          (up to {res.shift.max} mm at a corner
+          {res.shift.kind === "affine" ? ", incl. a slight rotation/scale" : ""}; {res.shift.drift} mm
+          from the last found position) — next scan
           should land on target.{" "}
           {canUndo && (
             <button onClick={onUndo} className="underline hover:text-cyan-100">
@@ -107,10 +124,22 @@ function ScanSummary({ res, canUndo, onUndo }) {
               <td>{positionText(r)}</td>
               <td
                 className={
-                  !r.ok ? "text-red-400" : r.verdict?.unverified ? "text-amber-400" : "text-emerald-400"
+                  !r.ok
+                    ? "text-red-400"
+                    : r.verdict?.unverified
+                    ? "text-amber-400"
+                    : r.verdict?.analysisReady
+                    ? "text-emerald-400"
+                    : "text-sky-300"
                 }
               >
-                {!r.ok ? `✗ ${r.error}` : r.verdict?.unverified ? "⚠ UNVERIFIED" : "✓"}
+                {!r.ok
+                  ? `✗ ${r.error}`
+                  : r.verdict?.unverified
+                  ? "⚠ UNVERIFIED"
+                  : r.verdict?.analysisReady
+                  ? "✓"
+                  : "✓ review"}
               </td>
             </tr>
           ))}
@@ -191,7 +220,8 @@ export default function PlateMap({ experiment = "" }) {
   const blocks = listBlocks(plate);
   const { nC } = blockDims(plate);
   const cornersSet = cornersSetFor(plate.ref);
-  const blockZ = (k) => plate.z[k];
+  // 前往方格时的高度:手教的优先,其次自动对焦记忆
+  const blockZ = (k) => plate.zTaught?.[k] ?? plate.z?.[k];
 
   const nearest = React.useMemo(() => {
     if (!pos || !cornersSet) return null;
@@ -269,7 +299,7 @@ export default function PlateMap({ experiment = "" }) {
       const res = await scanPlate(id, {
         nameFor: (b, camera) =>
           safeName([camera === "mock-forced" && "MOCK", experiment || "scan", name, b.label, fileStamp()]),
-        logName: safeName([experiment || "scan", name, "scan log v2"], ".csv"),
+        logName: safeName([experiment || "scan", name, SCAN_LOG_SUFFIX], ".csv"),
         onProgress: (t) => setJob(`Scanning ${name} — ${t}`),
         shouldStop: () => stopRef.current,
       });
@@ -313,7 +343,7 @@ export default function PlateMap({ experiment = "" }) {
   const setBlock = (field, v) =>
     updatePlate((p) => {
       const n = Math.max(1, Number(v) || 1);
-      return n === p[field] ? p : { ...p, [field]: n, z: {}, zSharp: {} };
+      return n === p[field] ? p : { ...p, [field]: n, z: {}, zSharp: {}, zTaught: {} };
     });
   // 撤销上一次扫描对地图的自动修正
   const undoShift = () =>
@@ -346,7 +376,8 @@ export default function PlateMap({ experiment = "" }) {
       const s = await stageStatus();
       const z = s?.position?.z;
       if (z == null) throw new Error("no Z position");
-      updatePlate((p) => ({ ...p, z: { ...p.z, [target]: two(z) } }));
+      // 手教高度单独存:只用于这一格,不参与「孔底平面」投票,也不会被自动对焦改写
+      updatePlate((p) => ({ ...p, zTaught: { ...(p.zTaught || {}), [target]: two(z) } }));
     });
 
   // 载物台坐标 → SVG (Y 翻转朝上)
@@ -605,6 +636,7 @@ export default function PlateMap({ experiment = "" }) {
           .map((b) => {
             const p = blockCenterFor(plate, b);
             const z = blockZ(b.key);
+            const taught = plate.zTaught?.[b.key] != null;
             const isSel = sel === b.key;
             const isHere = nearest === b.key;
             return (
@@ -612,7 +644,11 @@ export default function PlateMap({ experiment = "" }) {
                 key={b.key}
                 onClick={() => goBlock(b)}
                 disabled={busy || !connected || !cornersSet}
-                title={p ? `${b.label} · X${p.x} Y${p.y}${z != null ? ` Z${z}` : ""}` : "teach corners"}
+                title={
+                  p
+                    ? `${b.label} · X${p.x} Y${p.y}${z != null ? ` Z${z}${taught ? " (taught)" : " (autofocus)"}` : ""}`
+                    : "teach corners"
+                }
                 className={`relative aspect-square rounded border text-xs transition ${
                   isSel
                     ? "border-cyan-400 bg-cyan-900/60"
@@ -627,8 +663,13 @@ export default function PlateMap({ experiment = "" }) {
                   {b.label}
                 </span>
                 {z != null && (
-                  <span className="absolute bottom-0.5 right-1 text-[9px] text-emerald-400">
+                  <span
+                    className={`absolute bottom-0.5 right-1 text-[9px] ${
+                      taught ? "text-amber-300" : "text-emerald-400"
+                    }`}
+                  >
                     Z{z}
+                    {taught ? "✎" : ""}
                   </span>
                 )}
                 {isHere && (

@@ -17,7 +17,7 @@ W, H = 1014, 760  # 预览 (lores) 帧尺寸
 
 
 def render(pitch=148.0, angle_deg=1.0, origin=(507.0, 380.0), bright=True, seed=0, keep=None,
-           noise_seed=None):
+           noise_seed=None, debris=True):
     """合成一帧局部孔阵 (孔口/孔底两圈孔壁 + 孔里随机杂物 + 照明梯度 + 噪声)。
 
     seed 决定孔里的杂物 (跟着板子走);noise_seed 决定传感器噪声 (每帧不同,默认同 seed)。
@@ -34,14 +34,15 @@ def render(pitch=148.0, angle_deg=1.0, origin=(507.0, 380.0), bright=True, seed=
                 continue
             centers.append(o + i * a + j * b)
             seeds.append(seed * 1000 + (i + 8) * 17 + (j + 8))
-    img = draw_wells(centers, pitch, bright, seeds, seed if noise_seed is None else noise_seed)
+    img = draw_wells(centers, pitch, bright, seeds, seed if noise_seed is None else noise_seed, debris)
     return img, a, b, o
 
 
-def draw_wells(centers, pitch, bright=True, seeds=None, noise_seed=0):
+def draw_wells(centers, pitch, bright=True, seeds=None, noise_seed=0, debris=True):
     """在 W×H 画面里按给定圆心画孔 (两圈孔壁 + 孔里杂物),加照明梯度和传感器噪声。
 
     seeds[k] 决定第 k 个孔里的杂物 (同一个孔每帧长得一样);noise_seed 决定这一帧的噪声。
+    debris=False 画空孔。
     """
     bg, rim, inside = (200, 110, 235) if bright else (95, 190, 40)
     img = np.full((H, W), bg, np.uint8)
@@ -54,7 +55,7 @@ def draw_wells(centers, pitch, bright=True, seeds=None, noise_seed=0):
         cv2.circle(img, ctr, int(0.43 * pitch * F), rim, -1, cv2.LINE_AA, 4)
         cv2.circle(img, ctr, int(0.40 * pitch * F), inside, -1, cv2.LINE_AA, 4)
         cv2.circle(img, ctr, int(0.37 * pitch * F), rim, 3, cv2.LINE_AA, 4)
-        for _ in range(rng.integers(0, 4)):  # 杂物 / 类器官
+        for _ in range(rng.integers(0, 4) if debris else 0):  # 杂物 / 类器官
             p = c + rng.uniform(-0.25, 0.25, 2) * pitch
             ax = (int(rng.uniform(4, 0.12 * pitch)), int(rng.uniform(4, 0.08 * pitch)))
             cv2.ellipse(img, (int(p[0]), int(p[1])), ax, rng.uniform(0, 180), 0, 360,

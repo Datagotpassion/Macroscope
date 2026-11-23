@@ -1,5 +1,7 @@
 import React from "react";
 import { stageStatus, stageMove, alignCalibration, alignCalibrate, plateFind } from "./api";
+import { scanPlate, fileStamp, safeName, STORE_EVENT } from "./scanRunner";
+import { chooseFolder, currentFolderName } from "./save";
 import {
   FORMAT_LIST,
   STORE_KEY,
@@ -23,10 +25,71 @@ import {
 // 坐标持久化 (localStorage);真实定位依赖「先 home 一次」建立坐标系。
 
 const DEF_ENV = { minX: 0, minY: 0, maxX: 325, maxY: 230 }; // 兜底可达区
+
+// 「拍全板」结果:每格的最终高度、对焦/对正情况、成功与否
+const focusText = (info) => {
+  const af = info?.af;
+  if (!af) return "–";
+  if (af.found) return `refocused`;
+  if (af.ran) return `no peak, kept`;
+  if (/sharp enough/.test(af.reason || "")) return "sharp, kept";
+  if (/no wells with content/.test(af.reason || "")) return "empty wells";
+  return af.reason || "–";
+};
+const alignText = (info) => {
+  const e = info?.align_error_mm;
+  if (!e) return info ? "n/a" : "–";
+  const d = Math.hypot(e[0], e[1]).toFixed(2);
+  return info.aligned_to ? `fixed ${d} mm` : `${d} mm ok`;
+};
+
+function ScanSummary({ res }) {
+  return (
+    <div className="mb-2 rounded border border-slate-700 p-2 text-[11px]">
+      <div className={res.failed ? "text-amber-400" : "text-emerald-400"}>
+        {res.plate}: {res.ok}/{res.results.length} blocks saved in {Math.round(res.ms / 1000)} s
+        {res.failed ? ` — ${res.failed} failed` : ""}
+      </div>
+      <table className="mt-1 w-full text-left text-slate-300">
+        <thead className="text-slate-500">
+          <tr>
+            <th className="font-normal">block</th>
+            <th className="font-normal">Z mm</th>
+            <th className="font-normal">focus</th>
+            <th className="font-normal">position</th>
+            <th className="font-normal" />
+          </tr>
+        </thead>
+        <tbody>
+          {res.results.map((r) => (
+            <tr key={r.label}>
+              <td className="font-mono">{r.label}</td>
+              <td>{r.info?.z ?? "–"}</td>
+              <td>{focusText(r.info)}</td>
+              <td>{alignText(r.info)}</td>
+              <td className={r.ok ? "text-emerald-400" : "text-red-400"}>
+                {r.ok ? "✓" : `✗ ${r.error}`}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 const AUTO_FORMATS = [24, 48, 96]; // 自动找板支持的板型 (一帧里要看得到足够多的孔)
 
-export default function PlateMap() {
+export default function PlateMap({ experiment = "" }) {
   const [store, setStore] = React.useState(loadStore);
+  const [scanRes, setScanRes] = React.useState(null); // 上一次「拍全板」的汇总
+  const stopRef = React.useRef(false);
+
+  // 扫描 (这里或延时巡扫) 写回了对焦记忆 → 重新读,免得用旧状态覆盖
+  React.useEffect(() => {
+    const reload = () => setStore(loadStore());
+    window.addEventListener(STORE_EVENT, reload);
+    return () => window.removeEventListener(STORE_EVENT, reload);
+  }, []);
   const [st, setSt] = React.useState(null);
   const [sel, setSel] = React.useState(null); // 选中板内的方格 key
   const [busy, setBusy] = React.useState(false);
@@ -34,6 +97,7 @@ export default function PlateMap() {
   const [cal, setCal] = React.useState(null); // 相机↔平台标定 (null = 未标定)
   const [job, setJob] = React.useState(""); // 正在跑的长任务说明
   const [info, setInfo] = React.useState(""); // 上一个任务的结果
+  const [scanning, setScanning] = React.useState(false); // 「拍全板」进行中 (显示 Stop)
 
   React.useEffect(() => {
     localStorage.setItem(STORE_KEY, JSON.stringify(store));
@@ -143,6 +207,30 @@ export default function PlateMap() {
           `Camera is now at A1 — check the preview shows the A1 well.`
       );
     });
+
+  // 一键拍全板:自检 → 每格对正 + 按需对焦 + 拍照 → 存到 PC 文件夹 → 失败补拍 → 汇总
+  const scanNow = async () => {
+    if (!currentFolderName()) {
+      const f = await chooseFolder();
+      if (!f) return setErr("choose a folder to save the images first");
+    }
+    const id = plate.id;
+    const name = plate.name;
+    stopRef.current = false;
+    setScanRes(null);
+    setScanning(true);
+    await run(async () => {
+      setJob(`Scanning ${name}…`);
+      const res = await scanPlate(id, {
+        nameFor: (b, camera) =>
+          safeName([camera === "mock-forced" && "MOCK", experiment || "scan", name, b.label, fileStamp()]),
+        onProgress: (t) => setJob(`Scanning ${name} — ${t}`),
+        shouldStop: () => stopRef.current,
+      });
+      setScanRes(res);
+    });
+    setScanning(false);
+  };
 
   // ── 多板管理 ──
   const updatePlate = (fn) =>
@@ -410,9 +498,27 @@ export default function PlateMap() {
         >
           Find plate (A1 in view)
         </button>
+        <button
+          onClick={scanNow}
+          disabled={busy || !connected || !calOk || !cornersSet}
+          title="Home if needed, then for every block: align, focus if blurry, capture, save to the PC folder"
+          className="rounded bg-emerald-700 px-2 py-0.5 hover:bg-emerald-600 disabled:opacity-40"
+        >
+          Scan plate
+        </button>
+        {scanning && (
+          <button
+            onClick={() => (stopRef.current = true)}
+            className="rounded bg-red-700 px-2 py-0.5 hover:bg-red-600"
+            title="Stop after the current block"
+          >
+            Stop
+          </button>
+        )}
       </div>
       {job && <p className="mb-2 animate-pulse text-[11px] text-cyan-300">{job}</p>}
       {info && <p className="mb-2 text-[11px] text-emerald-400">{info}</p>}
+      {scanRes && <ScanSummary res={scanRes} />}
 
       {/* 选中板的成像方格网 */}
       <div

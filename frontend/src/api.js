@@ -223,6 +223,51 @@ export async function alignCalibration() {
 export const alignCalibrate = () => stagePost("/api/align/calibrate");
 export const plateFind = (fmt) => stagePost(`/api/plate/find?fmt=${fmt}`);
 
+// 一键拍全板:开拍前自检 (没回零会自动回零)
+export const scanPreflight = () => stagePost("/api/scan/preflight");
+
+// 拍一格 (对正 + 按需对焦 + 全分辨率照片)。返回 { blob, info, camera }:
+// info 来自 X-Shot 头 (最终高度 z、对焦是否运行、对正修正量等)。mock 相机的帧直接报错。
+export async function scanShot(params, timeoutMs = 180000) {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v != null) qs.set(k, v);
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const r = await fetch(u(`/api/scan/shot?${qs.toString()}`), {
+      method: "POST",
+      signal: ctrl.signal,
+    });
+    if (!r.ok) {
+      let detail = `shot failed (HTTP ${r.status})`;
+      try {
+        detail = (await r.json()).detail || detail;
+      } catch {
+        /* 非 JSON 错误体 */
+      }
+      throw new Error(detail);
+    }
+    const camera = r.headers.get("X-Camera");
+    if (camera === "mock") {
+      throw new Error("camera fell back to MockCamera (real camera not working) — frame NOT saved");
+    }
+    let info = {};
+    try {
+      info = JSON.parse(r.headers.get("X-Shot") || "{}");
+    } catch {
+      /* 信息解析失败不影响照片 */
+    }
+    return { blob: await r.blob(), info, camera };
+  } catch (e) {
+    if (e && e.name === "AbortError") {
+      throw new Error(`shot timed out (>${Math.round(timeoutMs / 1000)}s)`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(to);
+  }
+}
+
 // 自动对焦:以当前 Z 为中心 ±z_range 小步扫描找清晰度峰值,返回 {best_z, curve}
 export function stageAutofocus({ z_range = 1.0, step = 0.1, feed = 120, cx, cy, r } = {}) {
   const p = new URLSearchParams({ z_range, step, feed });

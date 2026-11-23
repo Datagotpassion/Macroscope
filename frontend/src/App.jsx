@@ -420,7 +420,7 @@ export default function App() {
             <StageControl roi={selectedWell} />
           </div>
           <div className={ctrlTab === "plate" ? "" : "hidden"}>
-            <PlateMap />
+            <PlateMap experiment={experiment} />
           </div>
           <div className={ctrlTab === "capture" ? "space-y-3" : "hidden"}>
             <LocalSave

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
+import json
 import time
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +26,7 @@ import wellgrid
 from align import AlignError, Aligner
 from camera import CameraController, _log
 from platefind import PlateFinder
+from scan import ScanError, Shooter
 from image_store import ImageStore
 from plate_detector import PlateDetector
 from scheduler import Scheduler
@@ -37,7 +40,7 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Camera"],  # 跨域 (Electron 渲染层) 读得到相机类型标记
+    expose_headers=["X-Camera", "X-Shot"],  # 跨域 (Electron 渲染层) 读得到相机类型 / 拍摄信息
 )
 
 camera = CameraController()
@@ -47,6 +50,7 @@ scheduler = Scheduler(camera, store)
 stage = StageController()
 aligner = Aligner(camera, stage)
 finder = PlateFinder(aligner)
+shooter = Shooter(camera, stage, aligner)
 
 # 实时预览参数。PREVIEW_FPS 设得很高 = 实际不限速,跑多快取决于相机/编码/网络。
 PREVIEW_FPS = 120
@@ -436,7 +440,7 @@ async def _motion(fn, *args):
     async with _motion_job:
         try:
             return await asyncio.to_thread(fn, *args)
-        except (AlignError, StageError) as e:
+        except (AlignError, StageError, ScanError) as e:
             raise HTTPException(400, str(e))
 
 
@@ -484,6 +488,51 @@ async def plate_find(fmt: int = 96):
     res = await _motion(finder.find, fmt)
     _log(f"[plate] found {fmt}-well: ref={res['ref']} pitch={res['pitch_mm']} angle={res['angle_deg']}")
     return res
+
+
+# ── 一键拍全板 (App 编排全板顺序/保存/重试;这里是自检 + 单格) ──
+
+
+@app.post("/api/scan/preflight")
+async def scan_preflight(home: bool = True):
+    """开拍前自检:相机是真相机、Klipper 就绪、已标定、画面不黑;没回零就回零 (Z 会重试一次)。"""
+    return await _motion(shooter.preflight, home)
+
+
+@app.post("/api/scan/shot")
+async def scan_shot(
+    x: float,
+    y: float,
+    z: float,
+    rows_dx: float = 1.0,
+    rows_dy: float = 0.0,
+    row_half: bool = True,
+    col_half: bool = True,
+    pitch_mm: float = 9.0,
+    af: bool = True,
+    af_range: float = 3.0,
+    ref_sharp: float | None = None,
+):
+    """拍一格:移过去 → 对正 → 按需对焦 → 全分辨率照片。
+
+    照片在 body (JPEG);对正/对焦/最终高度等过程信息在 X-Shot 头 (JSON)。
+    (x,y) 是格子中心,z 是预测的对焦高度;rows_dx/dy 是板上「往下一行」的平台方向,
+    row_half/col_half 表示这格在行/列方向的孔数是偶数 (中心在两孔正中)。
+    """
+    _require_real_camera()
+    img, info = await _motion(functools.partial(
+        shooter.shoot, x, y, z, rows_dir=(rows_dx, rows_dy), row_half=row_half,
+        col_half=col_half, pitch_mm=pitch_mm, autofocus=af, af_range=af_range,
+        ref_sharp=ref_sharp,
+    ))
+    jpeg = await asyncio.to_thread(_encode_jpeg, img, 92)
+    info["camera"] = camera.kind
+    _log(f"[scan] shot ({x:.1f},{y:.1f}) z={info.get('z')} af={info.get('af', {}).get('ran')} "
+         f"align={info.get('align_error_mm')} content={info.get('content_wells')}")
+    return Response(content=jpeg, media_type="image/jpeg", headers={
+        "X-Camera": camera.kind,
+        "X-Shot": json.dumps(info, separators=(",", ":")),
+    })
 
 
 # ── WebSocket 实时预览 (F2) ──

@@ -192,3 +192,17 @@ test("6/12-well plates: in-frame checks are impossible, photos are not flagged",
   assert.deepEqual([v.position, v.unverified, v.remember], ["unchecked", false, false]);
   assert.match(v.issues[0], /6-well/);
 });
+
+test("real-machine case: no peak but the plane is known → kept on the plane, not flagged", () => {
+  // 2026-11-23:A1 / A5 / E9 都对到 7.6–8.1 mm;A9 板面有马克笔字迹,曲线一路往低处升、找不到峰,
+  // 沿用平面 8.025 mm —— 照片其实对在孔底,不该标 UNVERIFIED
+  const p = plateWith({ z: { "0,0": 8.025, "0,1": 8.106, "1,2": 7.612 } });
+  const v = judgeShot(p, "0,2", { position: "confirmed", focus: "no_peak", z: 8.025 }, CORNER_OK);
+  assert.deepEqual([v.focus, v.unverified, v.remember], ["plane_kept", false, false]);
+  assert.match(v.issues[0], /kept the plate's well-bottom plane/);
+});
+
+test("no peak while the plane is still unknown stays flagged", () => {
+  const v = judgeShot(plateWith({ z: { "0,0": 8.0 } }), "0,1", { position: "aligned", focus: "no_peak", z: 10 }, CORNER_OK);
+  assert.deepEqual([v.focus, v.unverified], ["no_peak", true]);
+});

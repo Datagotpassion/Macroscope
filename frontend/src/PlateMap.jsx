@@ -35,6 +35,7 @@ const FOCUS_TEXT = {
   no_peak: "no peak, kept Z",
   unknown: "not assessed",
   off_plane: "off the well-bottom plane",
+  plane_kept: "no peak, kept plate plane",
   unchecked: "not checked (format)",
 };
 const POSITION_TEXT = {

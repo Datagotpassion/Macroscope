@@ -148,6 +148,13 @@ export function judgeShot(plate, key, info, corner) {
   if (focus === "refocused" && plane != null && Math.abs(info.z - plane) > PLANE_TOL_MM) {
     focus = "off_plane";
   }
+  // 平面已知、本格找不到峰、沿用了平面高度 → 合格。实测各格孔底高度差 < 0.5 mm,平面高度可靠;
+  // 找不到峰多半是本格的清晰度被别的平面主导 (2026-11-23 真机:A9 板面的马克笔字迹让曲线一路
+  // 往低处升,E5/E1 往高处升,照片其实都对在孔底)。只有平面未知时「没有峰」才算不合格。
+  if (focus === "no_peak" && plane != null && Math.abs(info.z - plane) <= PLANE_TOL_MM) {
+    focus = "plane_kept";
+    issues.push(`focus: no peak in this block (signal dominated by other planes); kept the plate's well-bottom plane Z ${info.z}`);
+  }
   if (FOCUS_BAD.has(focus)) {
     const why = {
       no_peak: `no focus peak, kept Z ${info?.z}`,

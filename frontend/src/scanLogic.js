@@ -403,9 +403,18 @@ export function planShift(plate, results, { planned, pitch, corner }) {
   const max = Math.max(...moves.map((d) => Math.hypot(d[0], d[1])));
   const mean = [0, 1].map((i) => r2(moves.reduce((s, d) => s + d[i], 0) / moves.length));
   const base = plate.refBase || plate.ref;
-  const info = { kind, mean, max: r2(max) };
-  if (max < SHIFT_MIN_MM) {
-    return { apply: false, reason: `map within ${r2(max)} mm at all four corners — no change needed`, ...info, drift: r2(maxCornerDistance(cur, fourCorners(base))) };
+  // 「值不值得改」看实际拍摄的位置 (各格中心 + A1) 上的拟合修正 —— 证据在那里;
+  // 「改得安不安全」(下面两道上限) 看四角。四角是外推值,会放大噪声:2026-11-23 真机一轮正常扫描,
+  // 拍摄位置上最大只要 0.298 mm,外推到 A12 是 0.362 mm,按四角判断就把 A5 的局部偏差学进了地图。
+  const obsMax = Math.max(...ps.map((p) => Math.hypot(...fix(p))));
+  const info = { kind, mean, max: r2(max), obsMax: r2(obsMax) };
+  if (obsMax < SHIFT_MIN_MM) {
+    return {
+      apply: false,
+      reason: `blocks within ${r2(obsMax)} mm of the map — no change needed`,
+      ...info,
+      drift: r2(maxCornerDistance(cur, fourCorners(base))),
+    };
   }
   if (max > ROUND_SHIFT_MAX_PITCH * pitch) {
     return {

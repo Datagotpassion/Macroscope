@@ -315,6 +315,7 @@ async function scanLocked(plate, { nameFor, logName, onProgress = () => {}, shou
       issues: [
         `applied=${shift.apply ? 1 : 0}`,
         `kind=${fmt(shift.kind)}`,
+        `obs_max_mm=${fmt(shift.obsMax)}`,
         `round_max_corner_mm=${fmt(shift.max)}`,
         `drift_from_base_mm=${fmt(shift.drift)}`,
         `mean_mm=${shift.mean ? shift.mean.join(" ") : ""}`,

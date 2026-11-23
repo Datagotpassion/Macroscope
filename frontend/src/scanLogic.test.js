@@ -296,3 +296,21 @@ test("markUnverified inserts the tag before the extension", () => {
   assert.equal(markUnverified("exp - Plate 1 - A1 - day 0 - 2026-11-23_14-05-09.jpg"),
     "exp - Plate 1 - A1 - day 0 - 2026-11-23_14-05-09 - UNVERIFIED.jpg");
 });
+
+test("real machine (16:48 scan): small noisy offsets must not be learned via corner extrapolation", () => {
+  // 拍摄位置上的拟合修正最大 0.298 mm (< 0.3),外推到 A12 是 0.362 mm。
+  // 「值不值得改」看拍摄位置,不看外推的四角 —— 这一轮不该改地图。
+  const ref = { tl: { x: 211.73, y: 196.71 }, tr: { x: 212.54, y: 95.94 }, bl: { x: 148.28, y: 196.07 } };
+  const data = [
+    ["A1", 198.24, 182.83, -0.084, -0.043], ["A5", 198.54, 146.19, -0.016, -0.414],
+    ["A9", 198.83, 109.54, 0.033, -0.251], ["E9", 162.58, 109.18, 0.017, -0.214],
+    ["E5", 162.28, 145.82, 0.025, -0.004], ["E1", 161.99, 182.47, 0.03, -0.115],
+  ];
+  const results = data.map(([k, x, y, dx, dy]) => ({ key: k, label: k, ok: true,
+    info: { x, y, align_error_mm: [dx, dy] }, verdict: { position: "confirmed" } }));
+  const s = planShift({ format: 96, ref }, results,
+    { planned: 6, pitch: 9, corner: { ok: true, status: "passed", a1_error_mm: [0.048, 0.104] } });
+  assert.equal(s.apply, false, s.reason);
+  assert.ok(s.obsMax <= 0.3 && s.max > 0.3, `obsMax ${s.obsMax} max ${s.max}`); // 0.298 → 0.30
+  assert.match(s.reason, /no change needed/);
+});

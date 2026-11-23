@@ -26,27 +26,36 @@ import {
 
 const DEF_ENV = { minX: 0, minY: 0, maxX: 325, maxY: 230 }; // 兜底可达区
 
-// 「拍全板」结果:每格的最终高度、对焦/对正情况、成功与否
-const focusText = (info, focus) => {
-  const af = info?.af;
-  if (!af) return "–";
-  if (af.found) return focus === "off-plane" ? "refocused (off-plane, not saved)" : "refocused";
-  if (af.ran) return `no peak, kept`;
-  if (/sharp enough/.test(af.reason || "")) return "sharp, kept";
-  if (/no wells with content/.test(af.reason || "")) return "empty wells";
-  return af.reason || "–";
+// 「拍全板」结果:板角核验、每格的最终高度、对焦/对正验收、成功与否、地图有没有修正
+const FOCUS_TEXT = {
+  refocused: "refocused",
+  sharp_kept: "sharp, kept",
+  empty: "empty wells",
+  off: "autofocus off",
+  no_peak: "no peak, kept Z",
+  unknown: "not assessed",
+  off_plane: "off the well-bottom plane",
+  unchecked: "not checked (format)",
 };
-const alignText = (info) => {
-  const e = info?.align_error_mm;
-  if (!e) return info ? "n/a" : "–";
-  const d = Math.hypot(e[0], e[1]).toFixed(2);
-  return info.aligned_to ? `fixed ${d} mm` : `${d} mm ok`;
+const POSITION_TEXT = {
+  confirmed: "edge-verified",
+  aligned: "aligned",
+  edge_mismatch: "plate edge mismatch",
+  unaligned: "not aligned",
+  unchecked: "map only (format)",
+};
+const positionText = (r) => {
+  const v = r.verdict;
+  if (!v) return r.info ? "n/a" : "–";
+  const res = r.info?.residual_mm;
+  return `${POSITION_TEXT[v.position] || v.position}${res != null ? ` (${res} mm)` : ""}`;
 };
 
-function ScanSummary({ res }) {
+function ScanSummary({ res, canUndo, onUndo }) {
+  const c = res.corner;
   return (
     <div className="mb-2 rounded border border-slate-700 p-2 text-[11px]">
-      <div className={res.failed ? "text-amber-400" : "text-emerald-400"}>
+      <div className={res.failed || res.unverified ? "text-amber-400" : "text-emerald-400"}>
         {res.plate}: {res.ok}/{res.results.length} blocks saved
         {(() => {
           const sz = res.results.find((r) => r.info?.size)?.info.size;
@@ -54,14 +63,29 @@ function ScanSummary({ res }) {
         })()}{" "}
         in {Math.round(res.ms / 1000)} s
         {res.failed ? ` — ${res.failed} failed` : ""}
+        {res.unverified ? ` — ${res.unverified} saved as UNVERIFIED` : ""}
       </div>
-      {res.shift && (
+      <div className={c?.ok ? "text-emerald-400" : "text-amber-400"}>
+        {c == null
+          ? "A1 corner check: not run (not possible for this plate format, or not supported by this Pi version)"
+          : c.ok
+          ? `A1 corner check passed (A1 off the map by ${c.a1_error_mm?.map((v) => v.toFixed(2)).join(", ")} mm)`
+          : `A1 corner check FAILED: ${c.reason} — photos marked UNVERIFIED; re-find the plate`}
+      </div>
+      {res.shift?.apply ? (
         <div className="text-cyan-300">
           Plate map corrected: blocks were off by ~({res.shift.mean[0]}, {res.shift.mean[1]}) mm
           (up to {res.shift.max} mm
           {res.shift.kind === "affine" ? ", incl. a slight rotation/scale" : ""}) — next scan
-          should land on target.
+          should land on target.{" "}
+          {canUndo && (
+            <button onClick={onUndo} className="underline hover:text-cyan-100">
+              undo
+            </button>
+          )}
         </div>
+      ) : (
+        res.shift?.reason && <div className="text-slate-400">Plate map: {res.shift.reason}</div>
       )}
       <table className="mt-1 w-full text-left text-slate-300">
         <thead className="text-slate-500">
@@ -75,13 +99,17 @@ function ScanSummary({ res }) {
         </thead>
         <tbody>
           {res.results.map((r) => (
-            <tr key={r.label}>
+            <tr key={r.label} title={(r.verdict?.issues || []).join(" | ")}>
               <td className="font-mono">{r.label}</td>
               <td>{r.info?.z ?? "–"}</td>
-              <td>{focusText(r.info, r.focus)}</td>
-              <td>{alignText(r.info)}</td>
-              <td className={r.ok ? "text-emerald-400" : "text-red-400"}>
-                {r.ok ? "✓" : `✗ ${r.error}`}
+              <td>{r.verdict ? FOCUS_TEXT[r.verdict.focus] || r.verdict.focus : "–"}</td>
+              <td>{positionText(r)}</td>
+              <td
+                className={
+                  !r.ok ? "text-red-400" : r.verdict?.unverified ? "text-amber-400" : "text-emerald-400"
+                }
+              >
+                {!r.ok ? `✗ ${r.error}` : r.verdict?.unverified ? "⚠ UNVERIFIED" : "✓"}
               </td>
             </tr>
           ))}
@@ -214,7 +242,9 @@ export default function PlateMap({ experiment = "" }) {
       const r = await plateFind(plate.format);
       setStore((s) => ({
         ...s,
-        plates: s.plates.map((p) => (p.id === id ? { ...p, ref: r.ref } : p)),
+        plates: s.plates.map((p) =>
+          p.id === id ? { ...p, ref: r.ref, refBase: r.ref, refPrev: undefined } : p
+        ),
       }));
       setInfo(
         `Found ${name}: pitch ${r.pitch_mm} mm, corner angle ${r.angle_deg}°. ` +
@@ -238,7 +268,7 @@ export default function PlateMap({ experiment = "" }) {
       const res = await scanPlate(id, {
         nameFor: (b, camera) =>
           safeName([camera === "mock-forced" && "MOCK", experiment || "scan", name, b.label, fileStamp()]),
-        logName: safeName([experiment || "scan", name, "scan log"], ".csv"),
+        logName: safeName([experiment || "scan", name, "scan log v2"], ".csv"),
         onProgress: (t) => setJob(`Scanning ${name} — ${t}`),
         shouldStop: () => stopRef.current,
       });
@@ -278,17 +308,24 @@ export default function PlateMap({ experiment = "" }) {
     setSel(null);
     updatePlate((p) => ({ ...newPlate(Number(fmt), p.name), id: p.id }));
   };
+  // 改分格:对焦记忆按格子编号 (行,列) 存,分格一变同一个编号就是另一片区域 → 清掉
   const setBlock = (field, v) =>
-    updatePlate((p) => ({ ...p, [field]: Math.max(1, Number(v) || 1) }));
+    updatePlate((p) => {
+      const n = Math.max(1, Number(v) || 1);
+      return n === p[field] ? p : { ...p, [field]: n, z: {}, zSharp: {} };
+    });
+  // 撤销上一次扫描对地图的自动修正
+  const undoShift = () =>
+    updatePlate((p) => (p.refPrev ? { ...p, ref: p.refPrev, refPrev: undefined } : p));
 
   const teachCorner = (which) =>
     run(async () => {
       const s = await stageStatus();
       if (!s?.connected || !s.position) throw new Error("stage offline / no position");
-      updatePlate((p) => ({
-        ...p,
-        ref: { ...p.ref, [which]: { x: two(s.position.x), y: two(s.position.y) } },
-      }));
+      updatePlate((p) => {
+        const ref = { ...p.ref, [which]: { x: two(s.position.x), y: two(s.position.y) } };
+        return { ...p, ref, refBase: ref, refPrev: undefined };
+      });
     });
 
   const goBlock = (b) =>
@@ -548,7 +585,13 @@ export default function PlateMap({ experiment = "" }) {
       </div>
       {job && <p className="mb-2 animate-pulse text-[11px] text-cyan-300">{job}</p>}
       {info && <p className="mb-2 text-[11px] text-emerald-400">{info}</p>}
-      {scanRes && <ScanSummary res={scanRes} />}
+      {scanRes && (
+        <ScanSummary
+          res={scanRes}
+          canUndo={!!plate.refPrev && scanRes.plate === plate.name}
+          onUndo={undoShift}
+        />
+      )}
 
       {/* 选中板的成像方格网 */}
       <div

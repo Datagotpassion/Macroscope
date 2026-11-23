@@ -41,14 +41,19 @@ export default function LocalSave({ experiment, autoSave, setAutoSave, registerS
   };
 
   const saveNow = React.useCallback(async () => {
-    let blob;
+    let blob, camera;
     try {
-      blob = await fetchLatestFrameBlob();
+      ({ blob, camera } = await fetchLatestFrameBlob());
     } catch {
       flash(t("saveNoFrame"));
       return;
     }
-    const name = `${experiment || "exp"}_${stamp()}.jpg`;
+    // 真相机没起来时的合成图 (mock) 绝不当实验数据存;有意空跑 (mock-forced) 存但加 MOCK 前缀
+    if (camera === "mock") {
+      flash(t("saveMockRefused"));
+      return;
+    }
+    const name = `${camera === "mock-forced" ? "MOCK_" : ""}${experiment || "exp"}_${stamp()}.jpg`;
     try {
       const buf = await blob.arrayBuffer();
       const where = await saveBytes(name, new Uint8Array(buf));

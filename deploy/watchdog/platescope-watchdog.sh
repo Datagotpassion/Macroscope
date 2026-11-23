@@ -14,7 +14,8 @@
 # Tunables via environment (with sane defaults):
 set -u
 
-URL="${WATCHDOG_URL:-http://localhost:8000/api/plate/image?annotate=false&fresh=true}"
+# buffer=false: probe frames must not replace the frame a user captured but has not saved yet
+URL="${WATCHDOG_URL:-http://localhost:8000/api/plate/image?annotate=false&fresh=true&buffer=false}"
 INTERVAL="${WATCHDOG_INTERVAL:-180}"       # seconds between probes
 TIMEOUT="${WATCHDOG_TIMEOUT:-40}"          # per-probe capture timeout (s)
 THRESHOLD="${WATCHDOG_THRESHOLD:-2}"       # consecutive fails before a restart

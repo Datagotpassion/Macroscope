@@ -82,7 +82,15 @@ export async function detectBeat(cx, cy, r, duration = 8) {
     u(`/api/well/beat?cx=${cx.toFixed(5)}&cy=${cy.toFixed(5)}&r=${r.toFixed(5)}&duration=${duration}`),
     { method: "POST" }
   );
-  if (!res.ok) throw new Error("beat detection failed");
+  if (!res.ok) {
+    let detail = "beat detection failed";
+    try {
+      detail = (await res.json()).detail || detail;
+    } catch {
+      /* 非 JSON 错误体 */
+    }
+    throw new Error(detail);
+  }
   return res.json();
 }
 
@@ -111,10 +119,11 @@ export async function listFrames(name) {
 // 最近一帧的原始图 (用于保存到 PC,不重新拍摄)
 export const frameLatestUrl = () => u(`/api/frame/latest?t=${Date.now()}`);
 
+// 返回 { blob, camera }:camera 是拍这帧时的相机 (X-Camera;旧版后端没有 → null)。
 export async function fetchLatestFrameBlob() {
   const r = await fetch(frameLatestUrl());
   if (!r.ok) throw new Error("no buffered frame");
-  return r.blob();
+  return { blob: await r.blob(), camera: r.headers.get("X-Camera") };
 }
 
 // 强制新拍一帧 (fresh=true,不做孔位检测) —— 供定时拍摄用。返回 { blob, camera }。
@@ -122,12 +131,13 @@ export async function fetchLatestFrameBlob() {
 // 后端被动回退成合成图)。mock 直接抛错 —— 绝不能把合成图当实验数据存下来。
 // 旧版后端没有这个头 → camera 为 null,照常放行。
 // 带超时:相机卡死时不让这次抓取无限挂起(否则会拖住整个定时任务)。
+// buffer=false:这帧不进 Pi 的缓存,不覆盖用户刚拍、还没保存的那一帧。
 export async function freshFrame(timeoutMs = 30000) {
   const ctrl = new AbortController();
   const to = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const r = await fetch(
-      u(`/api/plate/image?annotate=false&fresh=true&t=${Date.now()}`),
+      u(`/api/plate/image?annotate=false&fresh=true&buffer=false&t=${Date.now()}`),
       { signal: ctrl.signal }
     );
     if (!r.ok) throw new Error("capture failed");
@@ -225,6 +235,37 @@ export const plateFind = (fmt) => stagePost(`/api/plate/find?fmt=${fmt}`);
 
 // 一键拍全板:开拍前自检 (没回零会自动回零)
 export const scanPreflight = () => stagePost("/api/scan/preflight");
+
+// 每圈开拍前的板角核验:走到地图上的 A1,看外侧两个方向是不是板外。
+// 返回 {ok, reason, a1_error_mm, edge_check};旧版 Pi 没有这个接口 (404) → null (= 没核验)。
+export async function scanVerifyCorner(params, timeoutMs = 120000) {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v != null) qs.set(k, v);
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const r = await fetch(u(`/api/scan/verify_corner?${qs.toString()}`), {
+      method: "POST",
+      signal: ctrl.signal,
+    });
+    if (r.status === 404) return null;
+    if (!r.ok) {
+      let detail = `corner check failed (HTTP ${r.status})`;
+      try {
+        detail = (await r.json()).detail || detail;
+      } catch {
+        /* 非 JSON 错误体 */
+      }
+      throw new Error(detail);
+    }
+    return r.json();
+  } catch (e) {
+    if (e && e.name === "AbortError") throw new Error(`corner check timed out (>${Math.round(timeoutMs / 1000)}s)`);
+    throw e;
+  } finally {
+    clearTimeout(to);
+  }
+}
 
 // 拍一格 (对正 + 按需对焦 + 全分辨率照片)。返回 { blob, info, camera }:
 // info 来自 X-Shot 头 (最终高度 z、对焦是否运行、对正修正量等)。mock 相机的帧直接报错。

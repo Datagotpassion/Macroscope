@@ -11,6 +11,14 @@
   - 「模糊时才对焦」:给了上次这格的清晰度 ref_sharp,预测高度处 ≥ 80% 就不重新对焦。
 对正:格子中心应落在孔上 (该方向孔数为奇数) 或两孔正中 (偶数)。画面里测出偏差,
 超过 ALIGN_TOL 就修正一次 (平台到位有 ±0.2–0.3 mm 随机误差,要求不能更严)。
+
+验收 (每张照片都带,写进 X-Shot,App 据此标 UNVERIFIED / 决定能不能学进地图和对焦记忆):
+  position  confirmed     对正残差合格,且画面里看得到的板边和板面地图预测的一致 (孔身份已核验)
+            aligned       对正残差合格,但这格画面里看不到板边 (孔身份靠地图,本格无法核验)
+            edge_mismatch 看得到的板边和预测的对不上 —— 多半整体错开了整行/整列
+            unaligned     认不出孔阵,或修正后残差仍超标
+  focus     refocused / sharp_kept / empty (认出了孔、孔里没东西) / no_peak / unknown (认不出孔) / off
+孔阵是周期的,画面只能确定「到最近一个孔」;错开整行整列只能靠板边发现 (edge_check)。
 """
 
 from __future__ import annotations
@@ -21,6 +29,7 @@ import cv2
 import numpy as np
 
 from align import Aligner
+from platefind import LINE_OUT, line_scores
 
 Z_SETTLE_S = 0.3        # Z 停稳后再等一会儿
 Z_APPROACH_MM = 0.3     # Z 总是从下方接近目标 (丝杆回程间隙)
@@ -121,6 +130,56 @@ def block_error(lattice: dict, M: np.ndarray, rows_dir_stage, row_half: bool, co
     return np.linalg.solve(M, B @ e)                       # 修正移动 (mm)
 
 
+def _plate_axis(lattice: dict, M: np.ndarray, dir_stage) -> tuple[int, float]:
+    """板上某个方向 (平台坐标的单位向量) 对应画面的哪个基向量 (0=a, 1=b),以及正负号。
+
+    平台位移 d 的点出现在画面 −M·d 处,所以板上「往 +方向」在画面里是 −M·dir。
+    """
+    a, b = np.array(lattice["a"]), np.array(lattice["b"])
+    d_img = -M @ np.asarray(dir_stage, float)
+    ca = (d_img @ a) / (np.linalg.norm(a) + 1e-9)
+    cb = (d_img @ b) / (np.linalg.norm(b) + 1e-9)
+    return (0, float(np.sign(ca))) if abs(ca) >= abs(cb) else (1, float(np.sign(cb)))
+
+
+def edge_check(lattice: dict, M: np.ndarray, rows_dir, cols_dir, block, plate_dims) -> dict:
+    """画面里看得到的每一排/列孔,按板面地图应该在板内还是板外;和实际 (有没有孔) 比。
+
+    block = (r0, r1, c0, c1) 这格覆盖的孔 (行/列号从 0 起,含两端);plate_dims = (rows, cols)。
+    调用前画面中心应已对正到格子中心。画面中心在格点坐标里是 q (相对最近的孔),
+    沿行方向的第 t 排格点对应板上第 round(Rc + s·(t − q)) 行 (Rc = 格子中心行号)。
+    整体错开一整行/列时,本该在板外的那排会看到孔 (或反之) → 不一致。
+    注意:一帧约 7×5 孔,只评估整个孔都在画面里的格点;4×4 格子在画面短边方向的板边
+    刚好在画面外,所以单格只能核验一个方向 —— 两个方向都要核验用 Shooter.verify_corner。
+    返回 {ran, ok, edges_seen (看到了几排「应在板外」的格点), edges_seen_rows / _cols, mismatch}。
+    """
+    if not lattice.get("reliable"):
+        return {"ran": False, "reason": "wells not recognised"}
+    kr, sr = _plate_axis(lattice, M, rows_dir)
+    kc, sc = _plate_axis(lattice, M, cols_dir)
+    if kr == kc or sr == 0 or sc == 0:
+        return {"ran": False, "reason": "plate row/column directions do not match the image grid"}
+    a, b = np.array(lattice["a"]), np.array(lattice["b"])
+    q = np.linalg.solve(np.column_stack([a, b]), -np.array(lattice["offset"]))
+    r0, r1, c0, c1 = block
+    rows, cols = plate_dims
+    seen = {"row": 0, "column": 0}
+    mismatch = []
+    for k, s, ctr, n, name in ((kr, sr, (r0 + r1) / 2, rows, "row"),
+                               (kc, sc, (c0 + c1) / 2, cols, "column")):
+        for t, score in sorted(line_scores(lattice, k).items()):
+            idx = int(round(ctr + s * (t - q[k])))
+            expect_in = 0 <= idx < n
+            seen_in = score >= LINE_OUT
+            if not expect_in:
+                seen[name] += 1
+            if expect_in != seen_in:
+                mismatch.append(f"{name} index {idx} (0-based): expected {'wells' if expect_in else 'off-plate'}, "
+                                f"saw {'wells' if seen_in else 'none'} (score {score:.2f})")
+    return {"ran": True, "ok": not mismatch, "edges_seen": seen["row"] + seen["column"],
+            "edges_seen_rows": seen["row"], "edges_seen_cols": seen["column"], "mismatch": mismatch}
+
+
 class Shooter:
     def __init__(self, camera, stage, aligner: Aligner):
         self.camera, self.stage, self.al = camera, stage, aligner
@@ -146,7 +205,11 @@ class Shooter:
         if home and "z" not in homed:
             try:
                 self.stage.home("Z")
-            except Exception:  # noqa: BLE001 — 板子高于一次回零行程时,第二次接着往下走
+            except Exception as e:  # noqa: BLE001
+                # 只有「走完全程没触发」(板子高于一次回零行程) 才接着再回零一次;
+                # 通信超时等其他错误不能当成机械没触发,直接报出来。
+                if "no trigger" not in str(e).lower():
+                    raise ScanError(f"Z homing failed: {e}") from e
                 self.stage.home("Z")
             did.append("Z")
         st = self.stage.status()
@@ -220,13 +283,52 @@ class Shooter:
         return {**out, "found": True, "z": round(float(z), 3),
                 "gain": round(vals[i] / max(min(vals), 1e-9), 2)}
 
+    # ── 板角核验 (每圈开拍前) ──
+
+    def verify_corner(self, x: float, y: float, z: float, *, rows_dir, cols_dir,
+                      plate_dims=(8, 12), pitch_mm: float = 9.0) -> dict:
+        """走到地图上的 A1,确认 A1 外侧两个方向都是板外 —— 地图没有整体错开整行/整列。
+
+        孔阵是周期的,单格对正只能保证「对到了最近的孔」;单格的板边核验在 4×4 格子里只看得到
+        一个方向。这里在角孔上两个方向都看得到板边。相机先挪近最近的孔 (偏差 > 1/4 孔距时),
+        避免半格处的取整歧义。返回 {ok, reason, a1_error_mm (A1 实际位置 − 地图位置), edge_check}。
+        """
+        self.al.goto([x, y])
+        self.z_goto(z)
+        pos = np.array([x, y], float)
+        frame = self.al.grab()
+        lat = self.al.analyze(frame, pitch_mm)
+        if lat.get("reliable") and float(np.hypot(*lat["move_mm"])) > 0.25 * pitch_mm:
+            pos = pos + np.array(lat["move_mm"])
+            self.al.goto(pos)
+            frame = self.al.grab()
+            lat = self.al.analyze(frame, pitch_mm)
+        if not lat.get("reliable"):
+            return {"ok": False, "reason": "wells not recognised at the mapped A1 corner"}
+        a1 = pos + np.array(lat["move_mm"])
+        out = {"a1_error_mm": [round(float(a1[0] - x), 3), round(float(a1[1] - y), 3)]}
+        ec = edge_check(lat, self.al.matrix(frame.shape), rows_dir, cols_dir, (0, 0, 0, 0), plate_dims)
+        out["edge_check"] = ec
+        if not ec.get("ran"):
+            return {**out, "ok": False, "reason": ec.get("reason", "edge check did not run")}
+        if not ec["ok"]:
+            return {**out, "ok": False, "reason": "plate edge not where the map puts A1: " + "; ".join(ec["mismatch"])}
+        if not (ec["edges_seen_rows"] and ec["edges_seen_cols"]):
+            return {**out, "ok": False, "reason": "could not see the plate edge on both sides of A1"}
+        return {**out, "ok": True, "reason": "A1 has the plate edge on both outer sides"}
+
     # ── 单格 ──
 
     def shoot(self, x: float, y: float, z_pred: float, *, rows_dir=(1.0, 0.0),
               row_half: bool = True, col_half: bool = True, pitch_mm: float = 9.0,
               autofocus: bool = True, af_range: float = 3.0, af_extend: bool = True,
-              ref_sharp: float | None = None, full_res: bool = False) -> tuple[np.ndarray, dict]:
-        """拍一格。返回 (BGR 照片, 过程信息)。full_res=True 拍 12MP (临时切相机模式),否则 3MP。"""
+              ref_sharp: float | None = None, full_res: bool = False,
+              cols_dir=None, block=None, plate_dims=None) -> tuple[np.ndarray, dict]:
+        """拍一格。返回 (BGR 照片, 过程信息 + 验收结果)。full_res=True 拍 12MP (临时切相机模式),否则 3MP。
+
+        cols_dir (板上「往下一列 1→2」的平台方向)、block (r0, r1, c0, c1)、plate_dims (rows, cols)
+        都给了才做板边核验 (edge_check);不给时 position 最多是 aligned。
+        """
         info: dict = {"x": x, "y": y, "z_pred": z_pred}
         self.al.goto([x, y])
         self.z_goto(z_pred)
@@ -235,36 +337,71 @@ class Shooter:
         frame = self.al.grab()
         lat = self.al.analyze(frame, pitch_mm)
         pos = np.array([x, y], float)
+        residual = None
         if lat.get("reliable"):
             err = block_error(lat, self.al.matrix(frame.shape), rows_dir, row_half, col_half)
             info["align_error_mm"] = [round(float(err[0]), 3), round(float(err[1]), 3)]
-            if float(np.hypot(*err)) > ALIGN_TOL_MM:
+            residual = float(np.hypot(*err))
+            if residual > ALIGN_TOL_MM:
                 pos = pos + err
                 self.al.goto(pos)
                 frame = self.al.grab()
                 lat = self.al.analyze(frame, pitch_mm)
                 info["aligned_to"] = [round(float(pos[0]), 3), round(float(pos[1]), 3)]
+                residual = None  # 修正后重新测
+                if lat.get("reliable"):
+                    err2 = block_error(lat, self.al.matrix(frame.shape), rows_dir, row_half, col_half)
+                    residual = float(np.hypot(*err2))
         else:
             info["align_error_mm"] = None
             info["align_note"] = "wells not recognised — alignment skipped"
+        info["residual_mm"] = None if residual is None else round(residual, 3)
+
+        # 孔位验收:残差 + 板边核验 (看得到板边时)
+        if residual is None:
+            position, note = "unaligned", "wells not recognised in view"
+        elif residual > ALIGN_TOL_MM:
+            position, note = "unaligned", f"still {residual:.2f} mm off after correction"
+        else:
+            position, note = "aligned", "no plate edge in view to verify well identity"
+            if cols_dir is not None and block is not None and plate_dims is not None:
+                ec = edge_check(lat, self.al.matrix(frame.shape), rows_dir, cols_dir, block, plate_dims)
+                info["edge_check"] = ec
+                if ec.get("ran") and not ec["ok"]:
+                    position, note = "edge_mismatch", "; ".join(ec["mismatch"])
+                elif ec.get("ran") and ec["edges_seen"] > 0:
+                    position, note = "confirmed", f"{ec['edges_seen']} off-plate line(s) where expected"
+                elif not ec.get("ran"):
+                    note = ec.get("reason", note)
+            else:
+                note = "plate layout not given — edge check skipped"
+        info["position"], info["position_note"] = position, note
 
         # 对焦
         mask, n_content = content_mask(frame, lat)
         info["content_wells"] = n_content
         z = z_pred
         if mask is None:
-            info["af"] = {"ran": False, "reason": "no wells with content in view"}
+            if lat.get("reliable"):
+                info["af"] = {"ran": False, "reason": "no wells with content in view"}
+                info["focus"] = "empty"
+            else:
+                info["af"] = {"ran": False, "reason": "wells not recognised — focus not assessed"}
+                info["focus"] = "unknown"
         else:
             s_pred = sharpness(frame, mask)
             info["sharp_at_pred"] = round(s_pred, 2)
             if ref_sharp and s_pred >= SKIP_AF_RATIO * ref_sharp:
                 info["af"] = {"ran": False, "reason": f"sharp enough ({s_pred:.0f} vs ref {ref_sharp:.0f})"}
+                info["focus"] = "sharp_kept"
             elif autofocus:
                 af = self.autofocus(z_pred, af_range, mask, extend=af_extend)
                 info["af"] = af
+                info["focus"] = "refocused" if af["found"] else "no_peak"
                 z = af["z"]
             else:
                 info["af"] = {"ran": False, "reason": "autofocus off"}
+                info["focus"] = "off"
         self.z_goto(z)
         info["z"] = round(float(z), 3)
         if mask is not None:

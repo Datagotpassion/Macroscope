@@ -76,20 +76,23 @@ export default function App() {
   }, [refreshStatus]);
 
   // 拍照 (F1, F3)。busy 一定会复位,自动保存放在 busy 之外,不会卡住按钮。
+  // 拍摄失败时不自动保存 —— 否则会把 Pi 上缓存的旧帧当成这次拍的存下来。
   const doCapture = async () => {
     if (busy) return;
     if (inspectWell) stopInspect(); // 全板拍摄前先退出单孔检视
     setBusy(true);
+    let captured = false;
     try {
       const data = await capture();
       setWells(data.wells);
       setPlateUrl(plateImageUrl(true));
+      captured = true;
     } catch (e) {
       console.error("[capture] failed", e);
     } finally {
       setBusy(false);
     }
-    if (autoSave && saverRef.current) {
+    if (captured && autoSave && saverRef.current) {
       try {
         await saverRef.current();
       } catch (e) {

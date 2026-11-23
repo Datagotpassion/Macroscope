@@ -129,7 +129,9 @@ export default function PcTimelapse({ experiment, setExperiment, onRunningChange
       setCount(countRef.current);
       setLastFile(name);
       setErr("");
-      persist(); // 断点续拍:每张成功后更新计数与时间戳
+      // 断点续拍:每张成功后更新计数与时间戳。这张在途时用户点了 Stop → 别把 running 写回去,
+      // 否则下次打开 App 会自己续拍一个已经停掉的任务。
+      if (timerRef.current) persist();
     } catch (e) {
       // 单次失败 (相机离线、网络抖动等) 不停整个任务:记一下,下个周期继续。
       setErr(e.message || String(e));
@@ -150,7 +152,7 @@ export default function PcTimelapse({ experiment, setExperiment, onRunningChange
             block: b.label,
             mock: camera === "mock-forced",
           }),
-        logName: safeName([expRef.current || "capture", plateNameRef.current, "scan log"], ".csv"),
+        logName: safeName([expRef.current || "capture", plateNameRef.current, "scan log v2"], ".csv"),
         onProgress: setScanInfo,
         shouldStop: () => !timerRef.current, // 点了 Stop:拍完当前这格就收手
       });
@@ -159,7 +161,11 @@ export default function PcTimelapse({ experiment, setExperiment, onRunningChange
       const saved = res.results.filter((r) => r.ok);
       if (saved.length) setLastFile(saved[saved.length - 1].file);
       const bad = res.results.filter((r) => !r.ok);
-      setErr(bad.length ? `${bad.length} block(s) failed — ` + bad.map((r) => `${r.label}: ${r.error}`).join("; ") : "");
+      const notes = [];
+      if (bad.length) notes.push(`${bad.length} block(s) failed — ` + bad.map((r) => `${r.label}: ${r.error}`).join("; "));
+      if (res.corner && !res.corner.ok) notes.push(`A1 corner check failed: ${res.corner.reason}`);
+      if (res.unverified) notes.push(`${res.unverified} photo(s) saved as UNVERIFIED (see scan log)`);
+      setErr(notes.join(" · "));
       if (timerRef.current) persist(); // 已经停了就别把 running 状态写回去
     } catch (e) {
       setErr(`stage map (${plateNameRef.current}): ${e.message || String(e)}`);

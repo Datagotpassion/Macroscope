@@ -224,3 +224,126 @@ def test_preflight_refuses(tmp_path, problem, match):
         cam.dark = True
     with pytest.raises(scan.ScanError, match=match):
         sh.preflight()
+
+
+# ── 验收:孔位 / 板边核验 / 板角核验 ──
+# 用真机方向的整块板 (A→H 朝 −X,1→12 朝 −Y,板歪 0.8°),相机一帧约 7×5 孔,和真机一样。
+
+from test_platefind import PlateCamera, unit  # noqa: E402
+
+PITCH = 9.0
+RD, CD = unit(180.8), unit(270.8)
+A1 = np.array([213.5, 197.1])
+
+
+class PlateCam3(PlateCamera):
+    kind = "picamera2"
+
+    def clear_roi(self):
+        pass
+
+
+def make_plate(tmp_path):
+    M = camera_matrix(px_per_mm=15.9, rot_deg=0.0, mirrored=False)
+    start = A1 + PITCH * (3 * RD + 5 * CD)  # 板中间,标定时满屏都是孔
+    stage = Stage3(*start, z=10.0)
+    cam = PlateCam3(stage, M, A1, RD, CD)
+    al = align.Aligner(cam, stage, cal_file=tmp_path / "cal.json")
+    al.calibrate(step_mm=2.0)
+    return scan.Shooter(cam, stage, al), stage, cam
+
+
+def shoot_block(sh, blk, shift=(0.0, 0.0), layout=True):
+    r0, r1, c0, c1 = blk
+    p = A1 + PITCH * ((r0 + r1) / 2 * RD + (c0 + c1) / 2 * CD) + np.asarray(shift)
+    kw = dict(cols_dir=CD, block=blk, plate_dims=(8, 12)) if layout else {}
+    _, info = sh.shoot(*p, z_pred=10.0, rows_dir=RD, autofocus=False,
+                       row_half=(r1 - r0 + 1) % 2 == 0, col_half=(c1 - c0 + 1) % 2 == 0, **kw)
+    return info
+
+
+def test_corner_block_is_confirmed_by_the_plate_edge(tmp_path):
+    sh, stage, cam = make_plate(tmp_path)
+    info = shoot_block(sh, (0, 3, 0, 3), shift=(0.4, -0.3))  # 地图有一点小偏差 (正常)
+    assert info["position"] == "confirmed", info
+    assert info["edge_check"]["ok"] and info["edge_check"]["edges_seen"] > 0
+    assert info["residual_mm"] is not None and info["residual_mm"] <= scan.ALIGN_TOL_MM
+
+
+def test_map_off_by_a_whole_row_is_caught_by_the_block_edge_check(tmp_path):
+    # 地图整体错开一行 (9 mm):对正照样「成功」(对到最近的孔),只有板边对不上
+    sh, stage, cam = make_plate(tmp_path)
+    info = shoot_block(sh, (0, 3, 0, 3), shift=PITCH * RD)
+    assert info["residual_mm"] <= scan.ALIGN_TOL_MM  # 周期歧义:单看对正发现不了
+    assert info["position"] == "edge_mismatch", info
+
+
+def test_interior_block_without_edges_is_only_aligned(tmp_path):
+    sh, stage, cam = make_plate(tmp_path)
+    info = shoot_block(sh, (3, 4, 5, 6))
+    assert info["position"] == "aligned", info
+
+
+def test_without_plate_layout_the_edge_check_is_skipped(tmp_path):
+    sh, stage, cam = make_plate(tmp_path)
+    info = shoot_block(sh, (0, 3, 0, 3), layout=False)
+    assert info["position"] == "aligned" and "edge_check" not in info
+
+
+def test_uniform_gray_frame_is_unaligned_and_focus_unknown(tmp_path):
+    # 审查复现:均匀灰图能过自检、返回照片 —— 现在照片仍返回,但验收标成未确认
+    sh, stage, cam, al = make(tmp_path)
+    gray = lambda preview=True: np.full((H, W, 3), 128, np.uint8)  # noqa: E731
+    cam.capture_array = gray
+    _, info = sh.shoot(120.0, 90.0, 10.0)
+    assert info["position"] == "unaligned" and info["focus"] == "unknown", info
+
+
+def test_focus_status_is_reported(tmp_path):
+    sh, stage, cam, al = make(tmp_path, z_focus=10.2)
+    gap = np.array([118.4 + 4.5, 91.7 + 4.5])
+    _, first = sh.shoot(*gap, z_pred=8.5)
+    assert first["focus"] == "refocused"
+    _, again = sh.shoot(*gap, z_pred=first["z"], ref_sharp=first["sharp"])
+    assert again["focus"] == "sharp_kept"
+    _, off = sh.shoot(*gap, z_pred=10.2, autofocus=False)
+    assert off["focus"] == "off"
+    sh2, *_ = make(tmp_path / "empty", z_focus=10.2, content=False)
+    _, empty = sh2.shoot(*gap, z_pred=10.2)
+    assert empty["focus"] == "empty"
+
+
+def test_corner_check_passes_on_the_real_a1(tmp_path):
+    sh, stage, cam = make_plate(tmp_path)
+    res = sh.verify_corner(*(A1 + [0.5, -0.4]), 10.0, rows_dir=RD, cols_dir=CD)
+    assert res["ok"], res
+    assert res["edge_check"]["edges_seen_rows"] and res["edge_check"]["edges_seen_cols"]
+    assert math.hypot(*(np.array(res["a1_error_mm"]) - [-0.5, 0.4])) < 0.35, res
+
+
+@pytest.mark.parametrize("shift", [PITCH * RD, -PITCH * RD, PITCH * CD, -PITCH * CD])
+def test_corner_check_catches_a_map_off_by_a_whole_well(tmp_path, shift):
+    # 整行 / 整列错开:块级核验在画面短边方向看不到板边,板角核验两个方向都看得到
+    sh, stage, cam = make_plate(tmp_path)
+    res = sh.verify_corner(*(A1 + shift), 10.0, rows_dir=RD, cols_dir=CD)
+    assert not res["ok"], res
+
+
+def test_corner_check_fails_when_no_wells_are_seen(tmp_path):
+    sh, stage, cam = make_plate(tmp_path)
+    res = sh.verify_corner(*(A1 - 40 * RD), 10.0, rows_dir=RD, cols_dir=CD)  # 板外很远
+    assert not res["ok"] and "not recognised" in res["reason"]
+
+
+def test_preflight_does_not_retry_z_on_other_errors(tmp_path):
+    sh, stage, cam, al = make(tmp_path)
+    stage.homed = "xy"
+
+    def broken_home(axes):
+        stage.homes.append(axes)
+        raise RuntimeError("timed out")
+
+    stage.home = broken_home
+    with pytest.raises(scan.ScanError, match="Z homing failed"):
+        sh.preflight()
+    assert stage.homes == ["Z"]  # 不是「没触发」就不重试

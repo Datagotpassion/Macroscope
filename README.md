@@ -53,7 +53,18 @@ npm run dev          # http://localhost:5173 (代理 /api 到 :8000)
 ```bash
 cd backend
 pytest
+cd ../frontend
+npm test             # 扫描判断逻辑 (scanLogic.js),node --test,不需要额外依赖
 ```
+
+## 整板扫描的照片验收
+
+每张照片都带三项判断 (见 `backend/scan.py` 开头、`frontend/src/scanLogic.js`):
+孔位是否对正、孔身份是否核验 (每圈开拍前走到 A1 看外侧两边是不是板外)、焦面是否合格。
+不合格的**照样保存**,文件名加 ` - UNVERIFIED`,原因写进扫描记录 `… scan log v2.csv`。
+不合格的照片不进对焦记忆;只有「整圈完整 + 板角核验通过 + 每格都对正」时才自动修正板面地图
+(单轮 / 累计都有上限,扫描汇总里可撤销)。6 / 12 孔板一帧只有 1–2 个孔,画面核验做不了,
+照旧只按地图拍、不标 UNVERIFIED。
 
 ## 部署到树莓派
 
@@ -86,6 +97,7 @@ sudo systemctl enable --now platescope
 浏览器访问才需要 `cd frontend && npm install && npm run build`。
 
 **更新已部署的 Pi:** `cd ~/Macroscope && git pull && sudo systemctl restart platescope`。
+装了相机看门狗的话也重启它 (它直接运行仓库里的脚本):`sudo systemctl restart platescope-watchdog`。
 从 PC 验证:`curl http://raspberrypi.local:8000/api/status` 应返回 `"camera":"picamera2"`。
 
 ## 数据目录

@@ -22,7 +22,14 @@ import urllib.request
 
 # Moonraker 默认和后端同机 (Pi 上),端口 7125。开发机可用环境变量指向 Pi。
 MOONRAKER_URL = os.environ.get("PLATESCOPE_MOONRAKER", "http://localhost:7125")
-_TIMEOUT = 10.0
+# 等 Moonraker 回应的时间。G-code 脚本要 Klipper 执行完才回应,所以按命令类型分开:
+#   状态查询很快;普通 G-code (G1 只是进队列) 也快;
+#   回零 / M400 要等动作真的做完 —— X 行程 325 mm、回零 20 mm/s,Klipper 最多走 1.5 倍行程
+#   (~24 s);1200 mm/min 走对角 ~400 mm 也要 ~20 s。旧的统一 10 s 会让客户端报超时、
+#   硬件却还在动。
+_TIMEOUT = 10.0          # 状态查询
+GCODE_TIMEOUT = 30.0     # 一般 G-code
+MOTION_TIMEOUT = 180.0   # 回零 (G28) / 等运动完成 (M400)
 
 # 允许的运动范围之外,先给一个保守的手动步进上限,防手滑一次冲太远
 MAX_JOG_MM = 50.0
@@ -38,17 +45,17 @@ class StageController:
 
     # ── 底层 HTTP ──
 
-    def _request(self, path: str, method: str):
+    def _request(self, path: str, method: str, timeout: float = _TIMEOUT):
         url = f"{self.base}{path}"
         req = urllib.request.Request(url, method=method)
-        with urllib.request.urlopen(req, timeout=_TIMEOUT) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode())
 
     def _get(self, path: str):
         return self._request(path, "GET")
 
-    def _post(self, path: str):
-        return self._request(path, "POST")
+    def _post(self, path: str, timeout: float = _TIMEOUT):
+        return self._request(path, "POST", timeout)
 
     # ── 连接 / 状态 ──
 
@@ -94,11 +101,14 @@ class StageController:
 
     # ── G-code ──
 
-    def send(self, script: str) -> None:
-        """执行一段 G-code (可多行, 用 \\n 分隔)。被拒绝时抛 StageError。"""
+    def send(self, script: str, timeout: float = GCODE_TIMEOUT) -> None:
+        """执行一段 G-code (可多行, 用 \\n 分隔)。被拒绝时抛 StageError。
+
+        timeout:等 Klipper 执行完的上限。回零 / M400 用 MOTION_TIMEOUT。
+        """
         path = "/printer/gcode/script?script=" + urllib.parse.quote(script)
         try:
-            self._post(path)
+            self._post(path, timeout)
         except urllib.error.HTTPError as e:
             # Moonraker 把 Klipper 的报错放在 body 里 (例如 "Must home axis first")
             try:
@@ -139,16 +149,22 @@ class StageController:
 
         注意:这只是「假装已 home」,坐标是人为设定的,软限位据此判断;真正要精确
         坐标仍需 G28。用途:home 之前/失败时手动挪一挪、从卡死里把台子挪开。
+        救援之后要真正回零 (并重新核验板角) 再巡扫。
+
+        读不到 Klipper 的行程上下限时拒绝:旧版用写死的兜底值 (Z 上限 60,实际 15),
+        会把当前位置声明成 Z=30,之后「往 Z=10 走」实际是往下冲 20 mm。
         """
         st = self.status()
-        lo = st.get("axis_minimum") or [0.0, 0.0, 0.0, 0.0]
-        hi = st.get("axis_maximum") or [325.0, 230.0, 60.0, 0.0]
+        if not st.get("connected"):
+            raise StageError("stage offline — cannot declare a position")
+        lo, hi = st.get("axis_minimum"), st.get("axis_maximum")
+        if not (isinstance(lo, (list, tuple)) and isinstance(hi, (list, tuple))
+                and len(lo) >= 3 and len(hi) >= 3):
+            raise StageError("axis limits unknown (Klipper not fully up?) — refusing to declare "
+                             "a position; home the axes instead")
 
         def mid(i: int) -> float:
-            try:
-                return round((lo[i] + hi[i]) / 2.0, 3)
-            except Exception:  # noqa: BLE001
-                return 0.0
+            return round((float(lo[i]) + float(hi[i])) / 2.0, 3)
 
         x = mid(0) if x is None else x
         y = mid(1) if y is None else y
@@ -158,11 +174,11 @@ class StageController:
     def home(self, axes: str = "XYZ") -> None:
         """回零 (sensorless XY homing 在 printer.cfg 里配)。axes 例如 'XY' / 'Z'。"""
         letters = " ".join(a for a in "XYZ" if a in axes.upper())
-        self.send(("G28 " + letters).strip())
+        self.send(("G28 " + letters).strip(), timeout=MOTION_TIMEOUT)
 
     def wait_moves(self) -> None:
         """阻塞直到队列里的移动都执行完 (扫描/自动对焦时按步等待)。"""
-        self.send("M400")
+        self.send("M400", timeout=MOTION_TIMEOUT)
 
     def stop(self) -> None:
         """急停。之后需要 firmware_restart 才能恢复。"""

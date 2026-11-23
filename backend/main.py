@@ -89,7 +89,7 @@ async def capture_now():
     t1 = time.perf_counter()
     wells = await asyncio.to_thread(detector.detect_wells, image)
     t2 = time.perf_counter()
-    store.buffer_frame(image, meta={"wells": len(wells)})
+    store.buffer_frame(image, meta={"wells": len(wells), "camera": camera.kind})
     store.latest_wells = wells  # 缓存检测结果,标注时直接复用,不重复检测
     _log(f"[capture] grab={t1 - t0:.2f}s detect={t2 - t1:.2f}s wells={len(wells)}")
     return {
@@ -103,35 +103,42 @@ async def capture_now():
 async def get_wells():
     """获取当前帧的所有孔位 (基于一次新拍摄)。"""
     image = await asyncio.to_thread(camera.capture_array)
-    store.buffer_frame(image, meta={})
+    store.buffer_frame(image, meta={"camera": camera.kind})
     wells = await asyncio.to_thread(detector.detect_wells, image)
     return {"wells": wells, "total": len(wells)}
 
 
 @app.get("/api/plate/image")
-async def get_plate_image(annotate: bool = False, fresh: bool = False, full: bool = False):
+async def get_plate_image(annotate: bool = False, fresh: bool = False, full: bool = False,
+                          buffer: bool = True):
     """获取当前全板图像。
 
     默认复用最近一次 /api/capture 缓存的帧 (不重新拍摄),这样点一次「拍摄」
     只拍一张,而且显示的就是刚分析过的那一帧。fresh=True 时强制重新拍摄。
     full=True:新拍一张 12MP (临时切相机模式;也用于 12MP 切换的压力测试),不进缓存。
+    buffer=False:新拍的帧不进缓存 —— 看门狗探测、定时拍摄用,免得覆盖用户刚拍、
+    还没保存的那一帧 (手动保存读的是缓存帧)。
     """
+    kind = camera.kind
     if full:
         image = await asyncio.to_thread(camera.capture_full)
     elif fresh or store.latest_frame is None:
         image = await asyncio.to_thread(camera.capture_array)
-        store.buffer_frame(image, meta={})
+        if buffer:
+            store.buffer_frame(image, meta={"camera": kind})
     else:
         image = store.latest_frame
+        kind = store.latest_meta.get("camera", kind)
     if annotate and not full:  # 缓存的孔位属于缓存帧,和 12MP 新帧对不上
-        # 复用 /api/capture 已检测好的孔位,避免对同一帧重复跑 HoughCircles
-        wells = store.latest_wells
+        # 复用 /api/capture 已检测好的孔位,避免对同一帧重复跑 HoughCircles;
+        # 没进缓存的新帧 (buffer=False) 不能用缓存帧的孔位
+        wells = store.latest_wells if image is store.latest_frame else None
         if wells is None:
             wells = await asyncio.to_thread(detector.detect_wells, image)
         image = await asyncio.to_thread(detector.annotate, image, wells)
     jpeg = await asyncio.to_thread(_encode_jpeg, image)
     # X-Camera: 让 timelapse / 看门狗分辨这帧是不是真相机拍的 (mock = 假数据)
-    return Response(content=jpeg, media_type="image/jpeg", headers={"X-Camera": camera.kind})
+    return Response(content=jpeg, media_type="image/jpeg", headers={"X-Camera": kind})
 
 
 @app.get("/api/well/{label}/image")
@@ -140,7 +147,7 @@ async def get_well_image(label: str):
     image = store.latest_frame
     if image is None:
         image = await asyncio.to_thread(camera.capture_array)
-        store.buffer_frame(image, meta={})
+        store.buffer_frame(image, meta={"camera": camera.kind})
     wells = await asyncio.to_thread(detector.detect_wells, image)
     well = next((w for w in wells if w["label"] == label.upper()), None)
     if not well:
@@ -154,11 +161,14 @@ async def get_well_image(label: str):
 async def get_latest_frame():
     """返回最近一次拍摄缓存的原始帧 (全质量, 不重新拍摄)。
 
-    供前端保存到用户的 PC —— 保存的正是刚分析过的那一帧。
+    供前端保存到用户的 PC —— 保存的正是刚分析过的那一帧。X-Camera 是拍这帧时的相机类型
+    (mock = 真相机没起来时的合成图,前端拒存)。
     """
     if store.latest_frame is None:
         raise HTTPException(404, "没有缓存帧,请先 /api/capture")
-    return Response(content=_encode_jpeg(store.latest_frame, 95), media_type="image/jpeg")
+    kind = store.latest_meta.get("camera", "unknown")
+    return Response(content=_encode_jpeg(store.latest_frame, 95), media_type="image/jpeg",
+                    headers={"X-Camera": kind})
 
 
 @app.get("/api/crop")
@@ -202,13 +212,16 @@ async def well_snapshot(cx: float, cy: float, r: float):
 async def detect_beat(cx: float, cy: float, r: float, duration: float = 8.0):
     """跳动检测 (F16):对该孔抓一段高帧率序列,分析收缩频率。
 
-    抓帧期间相机被独占,实时预览会暂停几秒。
+    抓帧期间相机被独占,实时预览会暂停几秒。真相机没起来 (被动退回 MockCamera) 时拒绝:
+    合成图在 ROI 里故意带 1.5 Hz 亮度起伏,会被报成「在跳」。
     """
+    _require_real_camera()
     duration = max(2.0, min(60.0, duration))
     times, frames, patch = await asyncio.to_thread(
         camera.measure_motion, cx, cy, r, duration
     )
     result = await asyncio.to_thread(beat.analyze, times, frames)
+    result["camera"] = camera.kind
     # 把「实际测量的孔区域」缩略图一并返回 (去黑盒:用户能看清测的是不是 organoid)
     if patch is not None:
         ok, buf = cv2.imencode(".jpg", patch, [cv2.IMWRITE_JPEG_QUALITY, 75])
@@ -498,8 +511,36 @@ async def plate_find(fmt: int = 96):
 
 @app.post("/api/scan/preflight")
 async def scan_preflight(home: bool = True):
-    """开拍前自检:相机是真相机、Klipper 就绪、已标定、画面不黑;没回零就回零 (Z 会重试一次)。"""
+    """开拍前自检:相机是真相机、Klipper 就绪、已标定、画面不黑;没回零就回零
+    (Z 只在「走完全程没触发」时重试一次)。"""
     return await _motion(shooter.preflight, home)
+
+
+@app.post("/api/scan/verify_corner")
+async def scan_verify_corner(
+    x: float,
+    y: float,
+    z: float,
+    rows_dx: float,
+    rows_dy: float,
+    cols_dx: float,
+    cols_dy: float,
+    plate_rows: int = 8,
+    plate_cols: int = 12,
+    pitch_mm: float = 9.0,
+):
+    """每圈开拍前的板角核验:走到地图上的 A1 (x, y),看 A1 外侧两个方向是不是板外。
+
+    ok=false 说明地图和板子对不上 (多半整体错开了整行/整列),这一圈的照片 App 会标 UNVERIFIED,
+    也不会拿它修正地图。a1_error_mm = A1 实际位置 − 地图位置。
+    """
+    _require_real_camera()
+    res = await _motion(functools.partial(
+        shooter.verify_corner, x, y, z, rows_dir=(rows_dx, rows_dy), cols_dir=(cols_dx, cols_dy),
+        plate_dims=(plate_rows, plate_cols), pitch_mm=pitch_mm,
+    ))
+    _log(f"[scan] corner check ok={res.get('ok')} a1_error={res.get('a1_error_mm')} {res.get('reason')}")
+    return res
 
 
 @app.post("/api/scan/shot")
@@ -517,6 +558,14 @@ async def scan_shot(
     af_extend: bool = True,
     ref_sharp: float | None = None,
     full_res: bool = False,
+    cols_dx: float | None = None,
+    cols_dy: float | None = None,
+    plate_rows: int | None = None,
+    plate_cols: int | None = None,
+    r0: int | None = None,
+    r1: int | None = None,
+    c0: int | None = None,
+    c1: int | None = None,
 ):
     """拍一格:移过去 → 对正 → 按需对焦 → 全分辨率照片。
 
@@ -525,17 +574,24 @@ async def scan_shot(
     row_half/col_half 表示这格在行/列方向的孔数是偶数 (中心在两孔正中)。
     af_extend=false:对焦只在 z ± af_range 里找,不往外扩 (板子已有对焦记忆时)。
     full_res=true:最终照片拍 12MP (4056x3040,临时切相机模式),否则 3MP (2028x1520)。
+    cols_dx/dy (板上「往下一列」的平台方向) + plate_rows/cols + 这格覆盖的孔 r0..r1, c0..c1
+    都给了才做板边核验;X-Shot 里的 position / focus 是这张照片的验收结果 (见 scan.py)。
     """
     _require_real_camera()
+    layout = {}
+    if None not in (cols_dx, cols_dy, plate_rows, plate_cols, r0, r1, c0, c1):
+        layout = {"cols_dir": (cols_dx, cols_dy), "block": (r0, r1, c0, c1),
+                  "plate_dims": (plate_rows, plate_cols)}
     img, info = await _motion(functools.partial(
         shooter.shoot, x, y, z, rows_dir=(rows_dx, rows_dy), row_half=row_half,
         col_half=col_half, pitch_mm=pitch_mm, autofocus=af, af_range=af_range,
-        af_extend=af_extend, ref_sharp=ref_sharp, full_res=full_res,
+        af_extend=af_extend, ref_sharp=ref_sharp, full_res=full_res, **layout,
     ))
     jpeg = await asyncio.to_thread(_encode_jpeg, img, 92)
     info["camera"] = camera.kind
     _log(f"[scan] shot ({x:.1f},{y:.1f}) z={info.get('z')} af={info.get('af', {}).get('ran')} "
-         f"align={info.get('align_error_mm')} content={info.get('content_wells')}")
+         f"align={info.get('align_error_mm')} content={info.get('content_wells')} "
+         f"position={info.get('position')} focus={info.get('focus')}")
     return Response(content=jpeg, media_type="image/jpeg", headers={
         "X-Camera": camera.kind,
         "X-Shot": json.dumps(info, separators=(",", ":")),

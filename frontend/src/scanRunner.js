@@ -32,9 +32,14 @@ const PLANE_TOL_MM = 1.5; // 和板上其他格的中位数差超过它 = 对到
 const AF_RANGE_NEW = 3; // 这块板还没有对焦记忆:宽窗口,允许往外扩
 const AF_RANGE_KNOWN = 1.5; // 已有记忆:只在孔底平面附近找,不往外扩
 
-// 板子位置:各格对正偏差一致 (中位数 ≥ SHIFT_MIN、≥ 2/3 的格子离中位数 ≤ SHIFT_SPREAD) → 平移地图
+// 板子位置:扫完用各格的对正偏差修正板面地图。实测 (2026-11-23) 两次扫描各格偏差差 < 0.04 mm,
+// 是系统性的:整体平移 ~2.3 mm + 1–2% 的旋转/缩放。优先拟合「平移 + 线性」(仿射),
+// 拟合不可靠就退回只平移 (中位数,≥ 2/3 的格子离它 ≤ SHIFT_SPREAD)。最大修正量 < SHIFT_MIN 就不动。
 const SHIFT_MIN_MM = 0.3;
 const SHIFT_SPREAD_MM = 1.0;
+const AFFINE_MAX_RES_MM = 0.5; // 仿射拟合后每格残差都要 ≤ 它 (有一格测错就不用仿射)
+const AFFINE_MAX_SLOPE = 0.05; // 每 mm 最多 0.05 mm (≈3° / 5%),再大多半是测错了
+const AFFINE_MIN_SPREAD_MM = 10; // 格子中心在最窄的方向也要铺开这么多 (标准差),斜率才定得准
 
 const r2 = (v) => Math.round(v * 100) / 100;
 const median = (xs) => {
@@ -101,21 +106,70 @@ function forgetFocus(plateId, key) {
   });
 }
 
-// 扫完后:各格对正时测到的偏差一致 → 板子整体挪过,把三个角整体平移。返回 [dx, dy] 或 null。
+// 偏差 e (平台 mm) 对位置 p 的最小二乘仿射拟合 e ≈ t + J·(p − p̄)。格子没铺开就 null。
+// 返回 { at(p) → 该处的修正量 [dx, dy], J }。
+function fitAffine(ps, es) {
+  const n = ps.length;
+  const avg = (arr, k) => arr.reduce((s, v) => s + v[k], 0) / n;
+  const pc = [avg(ps, 0), avg(ps, 1)];
+  const t = [avg(es, 0), avg(es, 1)];
+  let sxx = 0, sxy = 0, syy = 0;
+  const c = [[0, 0], [0, 0]]; // c[k][i] = Σ (p_k − p̄_k)·e_i
+  ps.forEach((p, j) => {
+    const d = [p[0] - pc[0], p[1] - pc[1]];
+    sxx += d[0] * d[0];
+    sxy += d[0] * d[1];
+    syy += d[1] * d[1];
+    for (let k = 0; k < 2; k++) for (let i = 0; i < 2; i++) c[k][i] += d[k] * es[j][i];
+  });
+  const lamMin = (sxx + syy) / 2 - Math.sqrt(((sxx - syy) / 2) ** 2 + sxy * sxy);
+  if (lamMin / n < AFFINE_MIN_SPREAD_MM ** 2) return null;
+  const det = sxx * syy - sxy * sxy;
+  // J[i][k] = ∂e_i/∂p_k = (S⁻¹·c)[k][i],S = [[sxx, sxy], [sxy, syy]]
+  const J = [0, 1].map((i) => [
+    (syy * c[0][i] - sxy * c[1][i]) / det,
+    (sxx * c[1][i] - sxy * c[0][i]) / det,
+  ]);
+  const at = (p) => [0, 1].map((i) => t[i] + J[i][0] * (p[0] - pc[0]) + J[i][1] * (p[1] - pc[1]));
+  return { at, J };
+}
+
+// 扫完后:按各格对正时测到的偏差修正板面地图 (三个角一起变换),下次直接到位。
+// 返回 { kind: "affine" | "shift", mean: [dx, dy], max } 或 null (没必要 / 不可靠)。
 function learnShift(plateId, results) {
-  const errs = results.map((r) => r.info?.align_error_mm).filter(Array.isArray);
-  if (errs.length < 2) return null;
-  const mx = median(errs.map((e) => e[0]));
-  const my = median(errs.map((e) => e[1]));
-  if (Math.hypot(mx, my) < SHIFT_MIN_MM) return null;
-  const agree = errs.filter((e) => Math.hypot(e[0] - mx, e[1] - my) <= SHIFT_SPREAD_MM).length;
-  if (agree < Math.max(2, Math.ceil((errs.length * 2) / 3))) return null; // 不一致:不动地图
-  const mv = (c) => ({ ...c, x: r2(c.x + mx), y: r2(c.y + my) });
+  const pts = results.filter((r) => Array.isArray(r.info?.align_error_mm) && r.info.x != null);
+  if (pts.length < 2) return null;
+  const ps = pts.map((r) => [r.info.x, r.info.y]);
+  const es = pts.map((r) => r.info.align_error_mm);
+  let fix = null;
+  let kind = "shift";
+  const f = pts.length >= 4 ? fitAffine(ps, es) : null;
+  if (f && f.J.flat().every((v) => Math.abs(v) <= AFFINE_MAX_SLOPE)) {
+    const ok = ps.every((p, j) => {
+      const q = f.at(p);
+      return Math.hypot(es[j][0] - q[0], es[j][1] - q[1]) <= AFFINE_MAX_RES_MM;
+    });
+    if (ok) [fix, kind] = [f.at, "affine"];
+  }
+  if (!fix) {
+    const m = [median(es.map((e) => e[0])), median(es.map((e) => e[1]))];
+    const agree = es.filter((e) => Math.hypot(e[0] - m[0], e[1] - m[1]) <= SHIFT_SPREAD_MM).length;
+    if (agree < Math.max(2, Math.ceil((es.length * 2) / 3))) return null; // 不一致:不动地图
+    fix = () => m;
+  }
+  const fixes = ps.map(fix);
+  const max = Math.max(...fixes.map((d) => Math.hypot(d[0], d[1])));
+  if (max < SHIFT_MIN_MM) return null;
+  const mv = (c) => {
+    const d = fix([c.x, c.y]);
+    return { ...c, x: r2(c.x + d[0]), y: r2(c.y + d[1]) };
+  };
   updatePlate(plateId, (q) => ({
     ...q,
     ref: { ...q.ref, tl: mv(q.ref.tl), tr: mv(q.ref.tr), bl: mv(q.ref.bl) },
   }));
-  return [r2(mx), r2(my)];
+  const mean = [0, 1].map((i) => r2(fixes.reduce((s, d) => s + d[i], 0) / fixes.length));
+  return { kind, mean, max: r2(max) };
 }
 
 // 扫描记录 (只在桌面 App 里写:浏览器没有追加,每行会变成一次下载)

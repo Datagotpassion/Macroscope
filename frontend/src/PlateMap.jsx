@@ -52,8 +52,10 @@ function ScanSummary({ res }) {
       </div>
       {res.shift && (
         <div className="text-cyan-300">
-          Plate had moved by ({res.shift[0]}, {res.shift[1]}) mm — plate map updated, next scan
-          starts on target.
+          Plate map corrected: blocks were off by ~({res.shift.mean[0]}, {res.shift.mean[1]}) mm
+          (up to {res.shift.max} mm
+          {res.shift.kind === "affine" ? ", incl. a slight rotation/scale" : ""}) — next scan
+          should land on target.
         </div>
       )}
       <table className="mt-1 w-full text-left text-slate-300">

@@ -1,7 +1,9 @@
 import React from "react";
-import { stageStatus, stageMove, alignCalibration, alignCalibrate, plateFind } from "./api";
+import { stageStatus, stageMove, stageWait, alignCalibration, alignCalibrate, plateFind } from "./api";
+import { useI18n } from "./i18n.jsx";
 import {
   scanPlate,
+  isScanningPlate,
   fileStamp,
   safeName,
   STORE_EVENT,
@@ -12,6 +14,7 @@ import {
 import { chooseFolder, currentFolderName } from "./save";
 import {
   FORMAT_LIST,
+  ROW_LETTERS,
   STORE_KEY,
   two,
   cornerWells,
@@ -151,6 +154,7 @@ function ScanSummary({ res, canUndo, onUndo }) {
 const AUTO_FORMATS = [24, 48, 96]; // 自动找板支持的板型 (一帧里要看得到足够多的孔)
 
 export default function PlateMap({ experiment = "" }) {
+  const { t } = useI18n();
   const [store, setStore] = React.useState(loadStore);
   const [scanRes, setScanRes] = React.useState(null); // 上一次「拍全板」的汇总
   const stopRef = React.useRef(false);
@@ -220,6 +224,17 @@ export default function PlateMap({ experiment = "" }) {
   const blocks = listBlocks(plate);
   const { nC } = blockDims(plate);
   const cornersSet = cornersSetFor(plate.ref);
+  const a1 = plate.ref?.tl;
+  const hasA1 = Number.isFinite(a1?.x) && Number.isFinite(a1?.y);
+  const a1InRange = hasA1 && a1.x >= env.minX && a1.x <= env.maxX && a1.y >= env.minY && a1.y <= env.maxY;
+  const motionBusy = busy || isScanningPlate();
+  const stageReady = connected && st.state === "ready" && xyHomed;
+  let navigationHint = "";
+  if (!hasA1) navigationHint = t("mapNeedA1");
+  else if (!a1InRange) navigationHint = t("mapOutOfRange");
+  else if (!connected) navigationHint = t("mapConnectHint");
+  else if (!stageReady) navigationHint = t("mapHomeHint");
+  else if (isScanningPlate()) navigationHint = t("mapScanBusy");
   // 前往方格时的高度:手教的优先,其次自动对焦记忆
   const blockZ = (k) => plate.zTaught?.[k] ?? plate.z?.[k];
 
@@ -255,21 +270,30 @@ export default function PlateMap({ experiment = "" }) {
   };
 
   // ── 自动找板 ──
+  const goToA1 = () =>
+    run(async () => {
+      if (isScanningPlate()) throw new Error(t("mapScanBusy"));
+      if (!stageReady || !a1InRange) return;
+      setJob(t("mapGoing", plate.name));
+      setSel(null);
+      await stageMove({ x: a1.x, y: a1.y, feed: 3000 });
+      await stageWait();
+      setInfo(t("mapArrived", plate.name));
+    });
+
   const calibrate = () =>
     run(async () => {
-      setJob("Calibrating camera ↔ stage… (~1 min, stage walks a few mm)");
+      setJob(t("mapCalibrating"));
       const c = await alignCalibrate();
       setCal(c);
-      setInfo(
-        `Calibrated: ${c.px_per_mm?.toFixed(2)} px/mm, repeatability ${c.repeatability_mm} mm`
-      );
+      setInfo(t("mapCalResult", c.px_per_mm?.toFixed(2), c.repeatability_mm));
     });
 
   const findPlate = () =>
     run(async () => {
       const id = plate.id; // 任务要跑 1–2 分钟,中途切换了选中板也写回这块板
       const name = plate.name;
-      setJob(`Finding ${name}… (1–2 min, stage will move)`);
+      setJob(t("mapFinding", name));
       const r = await plateFind(plate.format);
       setStore((s) => ({
         ...s,
@@ -277,10 +301,7 @@ export default function PlateMap({ experiment = "" }) {
           p.id === id ? { ...p, ref: r.ref, refBase: r.ref, refPrev: undefined } : p
         ),
       }));
-      setInfo(
-        `Found ${name}: pitch ${r.pitch_mm} mm, corner angle ${r.angle_deg}°. ` +
-          `Camera is now at A1 — check the preview shows the A1 well.`
-      );
+      setInfo(t("mapFound", name, r.pitch_mm, r.angle_deg));
     });
 
   // 一键拍全板:自检 → 每格对正 + 按需对焦 + 拍照 → 存到 PC 文件夹 → 失败补拍 → 汇总
@@ -316,6 +337,8 @@ export default function PlateMap({ experiment = "" }) {
     }));
   const selectPlate = (id) => {
     setSel(null);
+    setInfo("");
+    setErr("");
     setStore((s) => ({ ...s, selectedId: id }));
   };
   const addPlate = () =>
@@ -352,11 +375,15 @@ export default function PlateMap({ experiment = "" }) {
   const teachCorner = (which) =>
     run(async () => {
       const s = await stageStatus();
-      if (!s?.connected || !s.position) throw new Error("stage offline / no position");
+      if (!s?.connected || s.state !== "ready" || !s.homed?.includes("x") || !s.homed?.includes("y") ||
+          !Number.isFinite(s.position?.x) || !Number.isFinite(s.position?.y)) {
+        throw new Error(t("mapHomeHint"));
+      }
       updatePlate((p) => {
         const ref = { ...p.ref, [which]: { x: two(s.position.x), y: two(s.position.y) } };
         return { ...p, ref, refBase: ref, refPrev: undefined };
       });
+      setInfo(t("mapRecorded", plate.name, corners[which]));
     });
 
   const goBlock = (b) =>
@@ -393,94 +420,116 @@ export default function PlateMap({ experiment = "" }) {
   ];
 
   return (
-    <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-3 text-sm">
-      <div className="mb-2 flex items-center justify-between">
-        <h3 className="font-semibold">Stage map</h3>
-        <span className={`text-xs ${connected ? "text-emerald-400" : "text-slate-500"}`}>
-          {connected ? (xyHomed ? "homed" : "not homed") : "offline"}
+    <div className="space-y-3 rounded-xl border border-slate-700 bg-slate-900 p-3.5 text-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-base font-semibold tracking-tight">{t("mapTitle")}</h3>
+        <span className={`flex items-center gap-1.5 text-xs ${stageReady ? "text-emerald-300" : "text-amber-300"}`}>
+          <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current" />
+          {connected ? (st.state !== "ready" ? st.state || t("mapOffline") : xyHomed ? t("mapHomed") : t("mapUnhomed")) : t("mapOffline")}
         </span>
       </div>
 
       {/* 可达区插画:画出每块已放好的板 + 当前位置 */}
-      <svg
-        viewBox={`-4 -4 ${W + 8} ${H + 8}`}
-        className="mb-2 w-full rounded border border-slate-700 bg-slate-950"
-        style={{ maxHeight: 240 }}
-        preserveAspectRatio="xMidYMid meet"
-      >
-        {/* 可达区边框 */}
-        <rect
-          x="0"
-          y="0"
-          width={W}
-          height={H}
-          fill="none"
-          stroke="#334155"
-          strokeDasharray="3 3"
-          vectorEffect="non-scaling-stroke"
-        />
-        {store.plates.map((p) => {
-          const q = plateQuad(p);
-          const isSel = p.id === store.selectedId;
-          if (!q) return null;
-          const pts = q.map((pt) => `${sx(pt.x)},${sy(pt.y)}`).join(" ");
-          const bb = plateBBox(p);
-          return (
-            <g key={p.id} onClick={() => selectPlate(p.id)} style={{ cursor: "pointer" }}>
-              <polygon
-                points={pts}
-                fill={isSel ? "rgba(6,182,212,0.30)" : "rgba(100,116,139,0.20)"}
-                stroke={isSel ? "#22d3ee" : "#64748b"}
-                strokeWidth={isSel ? 1.5 : 1}
-                vectorEffect="non-scaling-stroke"
-              />
-              <text
-                x={sx(bb.cx)}
-                y={sy(bb.cy)}
-                fill={isSel ? "#a5f3fc" : "#cbd5e1"}
-                fontSize={Math.max(6, H / 22)}
-                textAnchor="middle"
-                dominantBaseline="middle"
-              >
-                {p.name} · {p.format}
-              </text>
-            </g>
-          );
-        })}
-        {/* 当前平台位置 */}
-        {pos && xyHomed && (
-          <circle
-            cx={sx(pos.x)}
-            cy={sy(pos.y)}
-            r={Math.max(2, H / 60)}
-            fill="#f59e0b"
-            stroke="#fff"
-            strokeWidth="0.5"
+      <div className="overflow-hidden rounded-lg border border-slate-700 bg-slate-950">
+        <svg
+          aria-label={t("mapTitle")}
+          viewBox={`-12 -10 ${W + 24} ${H + 26}`}
+          className="block max-h-60 w-full"
+          preserveAspectRatio="xMidYMid meet"
+        >
+          <defs>
+            <pattern id="stage-map-grid" width="25" height="25" patternUnits="userSpaceOnUse" y={H}>
+              <path d="M 25 0 H 0 V 25" fill="none" stroke="#263748" strokeWidth="1" />
+            </pattern>
+          </defs>
+          <rect
+            x="0"
+            y="0"
+            width={W}
+            height={H}
+            fill="url(#stage-map-grid)"
+            stroke="#334155"
             vectorEffect="non-scaling-stroke"
           />
-        )}
-      </svg>
+          <g fontSize="11" fill="#94a3b8" fontFamily="monospace">
+            <text x="0" y={H + 13}>{env.minX}</text>
+            <text x={W} y={H + 13} textAnchor="end">X {env.maxX} mm</text>
+            <text x="3" y="12">Y {env.maxY}</text>
+          </g>
+          {store.plates.map((p) => {
+            const q = plateQuad(p);
+            const isSel = p.id === store.selectedId;
+            if (!q) return null;
+            const pts = q.map((pt) => `${sx(pt.x)},${sy(pt.y)}`).join(" ");
+            const bb = plateBBox(p);
+            return (
+              <g key={p.id} onClick={() => !busy && selectPlate(p.id)} className={busy ? "" : "cursor-pointer"}>
+                <polygon
+                  points={pts}
+                  fill={isSel ? "rgba(6,182,212,0.30)" : "rgba(100,116,139,0.20)"}
+                  stroke={isSel ? "#22d3ee" : "#64748b"}
+                  strokeWidth={isSel ? 1.5 : 1}
+                  vectorEffect="non-scaling-stroke"
+                />
+                <text
+                  x={sx(bb.cx)}
+                  y={sy(bb.cy)}
+                  fill={isSel ? "#a5f3fc" : "#cbd5e1"}
+                  fontSize={Math.max(6, H / 22)}
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                >
+                  {p.name} · {p.format}
+                </text>
+              </g>
+            );
+          })}
+          {hasA1 && a1InRange && (
+            <g transform={`translate(${sx(a1.x)} ${sy(a1.y)})`} fill="#67e8f9">
+              <title>{t("mapSavedA1")}</title>
+              <path d="M 0 -5 L 5 0 L 0 5 L -5 0 Z" />
+              <text x={sx(a1.x) > W - 24 ? -8 : 8} y="4" textAnchor={sx(a1.x) > W - 24 ? "end" : "start"}
+                fontSize="12" fontFamily="monospace" paintOrder="stroke" stroke="#020617" strokeWidth="2">A1</text>
+            </g>
+          )}
+          {pos && xyHomed && (
+            <g transform={`translate(${sx(pos.x)} ${sy(pos.y)})`} stroke="#fbbf24" fill="none">
+              <title>{t("mapPosition")}</title>
+              <circle r="7" strokeWidth="1.5" />
+              <path d="M-11 0h6 M5 0h6 M0 -11v6 M0 5v6" strokeWidth="2" />
+            </g>
+          )}
+        </svg>
+        <div className="flex flex-wrap items-center justify-between gap-x-2 border-t border-slate-800 px-3 py-2 text-xs">
+          <span className="flex items-center gap-2 text-slate-300">
+            <span aria-hidden="true" className="h-2 w-2 rounded-full border border-amber-400" />{t("mapPosition")}
+          </span>
+          <span className="font-mono tabular-nums text-slate-300">
+            {pos && xyHomed ? `X ${pos.x?.toFixed(1)} · Y ${pos.y?.toFixed(1)} mm` : "—"}
+          </span>
+        </div>
+      </div>
 
       {/* 板清单 */}
-      <div className="mb-2 flex flex-wrap items-center gap-1 text-xs">
+      <div className="flex flex-wrap items-center gap-1.5 text-xs">
         {store.plates.map((p) => (
           <span
             key={p.id}
-            className={`flex items-center gap-1 rounded px-2 py-0.5 ${
+            className={`flex items-center gap-1 rounded-md border px-2 py-1 ${
               p.id === store.selectedId
-                ? "bg-cyan-800 text-cyan-100"
-                : "bg-slate-800 text-slate-300"
+                ? "border-cyan-600/60 bg-cyan-950 text-cyan-200"
+                : "border-slate-700 bg-slate-800 text-slate-300"
             }`}
           >
-            <button onClick={() => selectPlate(p.id)} title={cornersSetFor(p.ref) ? "placed" : "not placed yet"}>
-              {p.name} · {p.format}
-              {!cornersSetFor(p.ref) && " ·?"}
+            <button onClick={() => selectPlate(p.id)} disabled={busy} aria-pressed={p.id === plate.id}>
+              {p.name} · {t("mapFormat", p.format)}
             </button>
             {store.plates.length > 1 && (
               <button
                 onClick={() => removePlate(p.id)}
+                disabled={busy}
                 className="text-slate-400 hover:text-red-300"
-                title="remove"
+                aria-label={t("mapRemove", p.name)}
               >
                 ×
               </button>
@@ -489,134 +538,158 @@ export default function PlateMap({ experiment = "" }) {
         ))}
         <button
           onClick={addPlate}
-          className="rounded bg-slate-700 px-2 py-0.5 hover:bg-slate-600"
+          disabled={busy}
+          className="rounded-md border border-dashed border-slate-600 px-2 py-1 text-slate-300 hover:border-slate-400"
         >
-          + plate
+          + {t("mapAdd")}
         </button>
       </div>
 
-      {/* 选中板:名字 + 板型 + 每帧几孔 */}
-      <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-slate-400">
-        <input
-          value={plate.name}
-          onChange={(e) => rename(e.target.value)}
-          className="w-24 rounded bg-slate-800 px-2 py-0.5 text-slate-100"
-        />
-        <select
-          value={plate.format}
-          onChange={(e) => changeFormat(e.target.value)}
-          className="rounded bg-slate-800 px-1 py-0.5 text-slate-100"
-        >
-          {FORMAT_LIST.map((f) => (
-            <option key={f} value={f}>
-              {f}-well
-            </option>
-          ))}
-        </select>
-        <label className="flex items-center gap-1" title="相机一帧覆盖多少孔 (行×列)">
-          wells/frame
-          <input
-            type="number"
-            min="1"
-            value={plate.blockR}
-            onChange={(e) => setBlock("blockR", e.target.value)}
-            className="w-10 rounded bg-slate-800 px-1 py-0.5"
-          />
-          ×
-          <input
-            type="number"
-            min="1"
-            value={plate.blockC}
-            onChange={(e) => setBlock("blockC", e.target.value)}
-            className="w-10 rounded bg-slate-800 px-1 py-0.5"
-          />
-        </label>
-        <span className="text-slate-500">
-          = {blocks.length} shot{blocks.length === 1 ? "" : "s"}
-        </span>
+      <div className="rounded-lg border border-cyan-900 bg-cyan-950/30 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+          <h4 className="font-semibold text-slate-100">{t("mapSavedA1")}</h4>
+          <span className="font-mono text-xs tabular-nums text-cyan-200">
+            {hasA1 ? `X ${a1.x.toFixed(2)} · Y ${a1.y.toFixed(2)} mm` : t("mapUnset")}
+          </span>
+        </div>
+        <button onClick={goToA1} disabled={busy || !!navigationHint}
+          className="mt-2.5 w-full rounded-md bg-cyan-300 px-3 py-2 font-semibold text-slate-950 hover:bg-cyan-200 disabled:bg-slate-700 disabled:text-slate-400">
+          {t("mapGoA1")}
+        </button>
+        {navigationHint && <p className="mt-2 text-xs text-slate-300">{navigationHint}</p>}
       </div>
+      {job && <p role="status" className="text-xs text-cyan-200">{job}</p>}
+      {info && <p role="status" className="text-xs text-emerald-300">{info}</p>}
+      {err && <p role="alert" className="rounded-md bg-red-950/60 px-3 py-2 text-xs text-red-200">{err}</p>}
 
-      {/* 教角孔 */}
-      <div className="mb-2 flex flex-wrap items-center gap-1 text-xs">
-        <span className="text-slate-400">Teach corners:</span>
-        {CORNERS.map(([k, label]) => (
+      <details key={plate.id} open={!cornersSet} className="rounded-lg border border-slate-700">
+        <summary className="cursor-pointer px-3 py-2.5 font-medium text-slate-200">{t("mapSetup")}</summary>
+        <fieldset disabled={busy} className="space-y-3 border-t border-slate-700 px-3 py-3">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300">
+            <input
+              aria-label={t("mapPlateName")}
+              value={plate.name}
+              onChange={(e) => rename(e.target.value)}
+              className="w-24 rounded bg-slate-800 px-2 py-0.5 text-slate-100"
+            />
+            <select
+              aria-label={t("mapPlateFormat")}
+              value={plate.format}
+              onChange={(e) => changeFormat(e.target.value)}
+              className="rounded bg-slate-800 px-1 py-0.5 text-slate-100"
+            >
+              {FORMAT_LIST.map((f) => (
+                <option key={f} value={f}>
+                  {t("mapFormat", f)}
+                </option>
+              ))}
+            </select>
+            <div className="flex items-center gap-1">
+              {t("mapBlockSize")}
+              <input
+                aria-label={t("mapRows")}
+                type="number"
+                min="1"
+                value={plate.blockR}
+                onChange={(e) => setBlock("blockR", e.target.value)}
+                className="w-10 rounded bg-slate-800 px-1 py-0.5"
+              />
+              ×
+              <input
+                aria-label={t("mapCols")}
+                type="number"
+                min="1"
+                value={plate.blockC}
+                onChange={(e) => setBlock("blockC", e.target.value)}
+                className="w-10 rounded bg-slate-800 px-1 py-0.5"
+              />
+            </div>
+          </div>
+
+          {/* 教角孔 */}
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            <span className="text-slate-300">{t("mapRecordPosition")}</span>
+            {CORNERS.map(([k, label]) => (
+              <button
+                key={k}
+                onClick={() => teachCorner(k)}
+                disabled={motionBusy || !stageReady}
+                title={plate.ref[k] ? `X ${plate.ref[k].x} · Y ${plate.ref[k].y} mm` : t("mapUnset")}
+                aria-label={t("mapRecordCorner", label)}
+                className={`rounded px-2 py-0.5 font-mono ${
+                  plate.ref[k] ? "bg-emerald-800 text-emerald-100" : "bg-slate-700 text-slate-300"
+                } hover:bg-slate-600 disabled:opacity-40`}
+              >
+                {label}
+                {plate.ref[k] ? " ✓" : ""}
+              </button>
+            ))}
+          </div>
+
+          {/* 自动:相机标定 (一次性) + 从 A1 附近自动定位三个角 */}
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <button
+              onClick={calibrate}
+              disabled={motionBusy || !stageReady}
+              title={t("mapCalHint")}
+              className={`rounded px-2 py-0.5 ${
+                calOk ? "bg-emerald-800 text-emerald-100" : "bg-slate-700 text-slate-300"
+              } hover:bg-slate-600 disabled:opacity-40`}
+            >
+              {calOk ? t("mapRecalibrate") : t("mapCalibrate")}
+            </button>
+            <button
+              onClick={findPlate}
+              disabled={
+                motionBusy || !stageReady || !calOk || !AUTO_FORMATS.includes(plate.format)
+              }
+              aria-describedby="map-find-hint"
+              className="rounded border border-slate-600 px-2 py-1 text-slate-200 hover:bg-slate-700 disabled:opacity-40"
+            >
+              {t("mapFind")}
+            </button>
+          </div>
+          <p id="map-find-hint" className="text-xs leading-relaxed text-slate-400">
+            {AUTO_FORMATS.includes(plate.format) ? t("mapFindHint") : t("mapManualHint")}
+          </p>
+        </fieldset>
+      </details>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-700 pt-3">
+        <h4 className="font-medium">{t("mapBlocks", blocks.length)}</h4>
+        <div className="flex items-center gap-2 text-xs">
           <button
-            key={k}
-            onClick={() => teachCorner(k)}
-            disabled={busy || !connected}
-            title={plate.ref[k] ? `X${plate.ref[k].x} Y${plate.ref[k].y}` : "not set"}
-            className={`rounded px-2 py-0.5 font-mono ${
-              plate.ref[k] ? "bg-emerald-800 text-emerald-100" : "bg-slate-700 text-slate-300"
-            } hover:bg-slate-600 disabled:opacity-40`}
+            onClick={scanNow}
+            disabled={motionBusy || !connected || !calOk || !cornersSet}
+            className="rounded bg-emerald-700 px-2 py-0.5 hover:bg-emerald-600 disabled:opacity-40"
           >
-            {label}
-            {plate.ref[k] ? " ✓" : ""}
+            {t("mapScan")}
           </button>
-        ))}
-      </div>
-
-      {/* 自动:相机标定 (一次性) + 从 A1 附近自动定位三个角 */}
-      <div className="mb-2 flex flex-wrap items-center gap-1 text-xs">
-        <span className="text-slate-400">Auto:</span>
-        <button
-          onClick={calibrate}
-          disabled={busy || !connected || !xyHomed}
-          title="One-time: plate in view and lit; the stage walks a few mm in X and Y"
-          className={`rounded px-2 py-0.5 ${
-            calOk ? "bg-emerald-800 text-emerald-100" : "bg-slate-700 text-slate-300"
-          } hover:bg-slate-600 disabled:opacity-40`}
-        >
-          {calOk ? "Camera calibrated ✓" : "Calibrate camera"}
-        </button>
-        <button
-          onClick={findPlate}
-          disabled={
-            busy || !connected || !xyHomed || !calOk || !AUTO_FORMATS.includes(plate.format)
-          }
-          title={
-            AUTO_FORMATS.includes(plate.format)
-              ? "Move the camera so A1 is in the live preview (plate corner visible), then click"
-              : "Auto-find works for 24/48/96-well plates; teach corners manually for this format"
-          }
-          className="rounded bg-cyan-800 px-2 py-0.5 hover:bg-cyan-700 disabled:opacity-40"
-        >
-          Find plate (A1 in view)
-        </button>
-        <button
-          onClick={scanNow}
-          disabled={busy || !connected || !calOk || !cornersSet}
-          title="Home if needed, then for every block: align, focus if blurry, capture, save to the PC folder"
-          className="rounded bg-emerald-700 px-2 py-0.5 hover:bg-emerald-600 disabled:opacity-40"
-        >
-          Scan plate
-        </button>
-        {scanning && (
-          <button
-            onClick={() => (stopRef.current = true)}
-            className="rounded bg-red-700 px-2 py-0.5 hover:bg-red-600"
-            title="Stop after the current block"
+          {scanning && (
+            <button
+              onClick={() => (stopRef.current = true)}
+              className="rounded bg-red-700 px-2 py-0.5 hover:bg-red-600"
+              title={t("mapStopHint")}
+            >
+              {t("stop")}
+            </button>
+          )}
+          <label
+            className="flex items-center gap-1 text-slate-300"
+            title={t("mapResolutionHint")}
           >
-            Stop
-          </button>
-        )}
-        <label
-          className="flex items-center gap-1 text-slate-300"
-          title="Save each block as 12MP (4056×3040) instead of 3MP (2028×1520). Also used by the timelapse scan."
-        >
-          <input
-            type="checkbox"
-            checked={fullRes}
-            disabled={busy}
-            onChange={(e) => {
-              setFullRes(e.target.checked);
-              setFullResState(e.target.checked);
-            }}
-          />
-          12MP
-        </label>
+            <input
+              type="checkbox"
+              checked={fullRes}
+              disabled={busy}
+              onChange={(e) => {
+                setFullRes(e.target.checked);
+                setFullResState(e.target.checked);
+              }}
+            />
+            12MP
+          </label>
+        </div>
       </div>
-      {job && <p className="mb-2 animate-pulse text-[11px] text-cyan-300">{job}</p>}
-      {info && <p className="mb-2 text-[11px] text-emerald-400">{info}</p>}
       {scanRes && (
         <ScanSummary
           res={scanRes}
@@ -639,17 +712,20 @@ export default function PlateMap({ experiment = "" }) {
             const taught = plate.zTaught?.[b.key] != null;
             const isSel = sel === b.key;
             const isHere = nearest === b.key;
+            const lastWell = `${ROW_LETTERS[b.rLast]}${b.cLast + 1}`;
+            const range = lastWell === b.label ? b.label : `${b.label}–${lastWell}`;
             return (
               <button
                 key={b.key}
                 onClick={() => goBlock(b)}
-                disabled={busy || !connected || !cornersSet}
+                disabled={motionBusy || !stageReady || !cornersSet}
+                aria-label={t("mapGoBlock", range)}
                 title={
                   p
-                    ? `${b.label} · X${p.x} Y${p.y}${z != null ? ` Z${z}${taught ? " (taught)" : " (autofocus)"}` : ""}`
-                    : "teach corners"
+                    ? `${t("mapGoBlock", range)} · X ${p.x} Y ${p.y}${z != null ? ` Z ${z}` : ""}`
+                    : t("mapNeedCorners")
                 }
-                className={`relative aspect-square rounded border text-xs transition ${
+                className={`relative flex min-h-9 min-w-0 flex-col items-center justify-center rounded border py-1 text-xs transition ${
                   isSel
                     ? "border-cyan-400 bg-cyan-900/60"
                     : isHere
@@ -659,12 +735,12 @@ export default function PlateMap({ experiment = "" }) {
                     : "border-slate-700 bg-slate-800/40"
                 } disabled:cursor-not-allowed`}
               >
-                <span className="absolute left-1 top-0.5 font-mono text-[11px] text-slate-300">
-                  {b.label}
+                <span className="max-w-full truncate font-mono text-[11px] text-slate-200">
+                  {range}
                 </span>
                 {z != null && (
                   <span
-                    className={`absolute bottom-0.5 right-1 text-[9px] ${
+                    className={`text-[10px] ${
                       taught ? "text-amber-300" : "text-emerald-400"
                     }`}
                   >
@@ -683,30 +759,18 @@ export default function PlateMap({ experiment = "" }) {
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <button
           onClick={teachZ}
-          disabled={busy || !connected || !(sel || nearest)}
+          disabled={motionBusy || !connected || !(sel || nearest)}
           className="rounded bg-cyan-800 px-2 py-1 hover:bg-cyan-700 disabled:opacity-40"
         >
-          Save focus Z → {keyLabel(plate, sel || nearest)}
+          {t("mapSaveZ", sel || nearest ? keyLabel(plate, sel || nearest) : null)}
         </button>
         {pos && (
           <span className="font-mono text-[10px] text-slate-400">
-            X{pos.x?.toFixed(1)} Y{pos.y?.toFixed(1)} Z{pos.z?.toFixed(1)}
+            Z {pos.z?.toFixed(2)} mm
           </span>
         )}
       </div>
 
-      {!cornersSet && (
-        <p className="mt-2 text-[11px] text-amber-400/80">
-          Teach {plate.name}'s corners — {corners.tl} / {corners.tr} / {corners.bl} — to place it on the map,
-          or put {corners.tl} in the live preview and click Find plate.
-        </p>
-      )}
-      {cornersSet && !xyHomed && (
-        <p className="mt-2 text-[11px] text-amber-400/80">
-          Home once (or Force move) so click-to-go has a real coordinate frame.
-        </p>
-      )}
-      {err && <p className="mt-2 text-[11px] text-red-400">{err}</p>}
     </div>
   );
 }

@@ -169,6 +169,7 @@ async function logRow(log, r) {
 // 同一时间只允许一次整板扫描 (例如延时巡扫正在跑时又点了 Plate map 的 Scan plate)。
 // Pi 端每格是原子的,但两次扫描会一格一格交错着抢平台。
 let activeScan = null; // 正在扫的板名
+export const isScanningPlate = () => activeScan !== null;
 
 // 拍一整块板。
 //   nameFor(block, camera) → 文件名 (必填;camera 为 "mock-forced" 时调用方可加 MOCK 前缀)。

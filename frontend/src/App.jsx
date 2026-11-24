@@ -397,7 +397,7 @@ export default function App() {
           <div className="flex gap-1 border-b border-slate-700 text-sm">
             {[
               ["stage", "Stage"],
-              ["plate", "Plate"],
+              ["plate", t("mapTab")],
               ["capture", "Timelapse"],
               ["settings", "⚙"],
             ].map(([id, label]) => (

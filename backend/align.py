@@ -277,8 +277,8 @@ class Aligner:
         step_mm 要明显小于半个孔距 (96 孔板 4.5 mm),否则规则孔阵会让平移测量有歧义。
         focus=True:先在原地找焦点 (find_focus),找不到就不标定。API 默认开;
         这里默认关,是因为单测的假平台没有 Z。
-        pitch_mm:板子的标准孔距。给了就核对画面里的孔距 —— 认错周期 (画面太糊时会)
-        的标定会被拒绝。
+        pitch_mm:板子的标准孔距。给了就按它 (× 平台测出的比例) 去认孔阵,再核对画面里的
+        孔距 —— 仍然对不上 (认错周期、画面太糊、板型不对) 的标定会被拒绝。
         """
         p0 = self.position()
         foc = self.find_focus() if focus else None
@@ -298,23 +298,33 @@ class Aligner:
             except Exception:  # noqa: BLE001 — 尽量回原位,失败也不掩盖原错误
                 pass
         f0 = walks["x"][0]
+        raw = {ax: [image_shift(walks[ax][i], walks[ax][i + 1]) for i in range(steps)] for ax in walks}
+        matches = [s[2] for ax in raw for s in raw[ax]]
+
+        def solve(lat: dict) -> tuple[np.ndarray, dict]:
+            """按孔阵 (a, b) 把每步平移折回一个孔距以内,平均得到标定矩阵。"""
+            a, b = np.array(lat["a"]), np.array(lat["b"])
+            cols, norms = [], {}
+            for ax in ("x", "y"):
+                shifts = [reduce_to_cell(s[:2], a, b) for s in raw[ax]]
+                cols.append(np.mean(shifts, axis=0) / step_mm)
+                norms[ax] = [float(np.hypot(*s)) for s in shifts]
+            return np.column_stack(cols), norms
+
         lat = wellgrid.find_well_lattice(f0)
         if not lat.get("reliable"):
             raise AlignError("calibration needs the plate in view (wells not recognised) — lit and roughly in focus?")
-        a, b = np.array(lat["a"]), np.array(lat["b"])
-
-        cols, step_norms, matches = [], {}, []
-        for ax in ("x", "y"):
-            fr = walks[ax]
-            shifts = []
-            for i in range(steps):
-                dx, dy, resp = image_shift(fr[i], fr[i + 1])
-                shifts.append(reduce_to_cell((dx, dy), a, b))
-                matches.append(resp)
-            cols.append(np.mean(shifts, axis=0) / step_mm)
-            step_norms[ax] = [float(np.hypot(*s)) for s in shifts]
-        M = np.column_stack(cols)
+        M, step_norms = solve(lat)
         problems, info = check_matrix(M)
+        # 知道板型时,按「标准孔距 × 平台走出来的比例」再认一次孔阵。画面里有板边、黑色板架、
+        # 板上刻字时,不给预期孔距可能认成半个孔距 (2026-11-24 在 A1 角:竖向 84 px,真值 163 px)。
+        if pitch_mm and info:
+            lat2 = wellgrid.find_well_lattice(f0, expected_pitch_px=pitch_mm * info["px_per_mm"])
+            if lat2.get("reliable"):
+                lat = lat2
+                M, step_norms = solve(lat)
+                problems, info = check_matrix(M)
+        a, b = np.array(lat["a"]), np.array(lat["b"])
         if min(matches) < 0.05:
             problems.append(f"weak image match ({min(matches):.2f}) — plate in view and lit?")
         for ax, norms in step_norms.items():

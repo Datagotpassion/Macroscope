@@ -134,3 +134,38 @@ def test_calibrate_rejects_pitch_that_does_not_match_the_plate(tmp_path):
     assert not (tmp_path / "cal.json").exists()
     cal = al.calibrate(step_mm=2.0, pitch_mm=9.0)  # 不找焦点时行为和以前一样
     assert cal["focus"] is None
+
+
+# ── 在板角标定:板边 + 黑色板架 + 板上刻字 (跟着板子动) ──
+
+class CornerCamera(LensCamera):
+    """画面里是板角:左边几列没有孔、是黑色板架,孔上有竖向重复的刻字/记号。
+
+    和 test_wellgrid.with_distractors 一样的场景,但干扰物跟着板子一起在画面里移动
+    (真机上它们就在板子/板架上)。不给预期孔距时,孔阵识别会被它们带偏。
+    """
+
+    def capture_array(self, preview=True):
+        self.n += 1
+        o = np.array([W / 2.0, H / 2.0]) + self.M @ (self.stage.p - self.well0)
+        img, *_ = render(self.pitch_px, self.angle, tuple(o), noise_seed=1000 + self.n,
+                         debris=False, keep=lambda i, j: i >= -1)
+        g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        x0, y0 = int(round(o[0])), o[1]
+        g[:, max(0, x0 - 471):max(0, x0 - 301)] = 15
+        for y in np.arange(y0 - 1000, H + 108, 108):
+            y = int(round(y))
+            cv2.line(g, (x0 - 111, y), (x0 + 29, y + 30), 10, 9)
+            cv2.line(g, (x0 + 69, y + 40), (x0 + 169, y + 10), 10, 9)
+        return cv2.GaussianBlur(cv2.cvtColor(g, cv2.COLOR_GRAY2BGR), (0, 0), 0.8)
+
+
+def test_calibrate_at_the_plate_corner_uses_the_plate_pitch(tmp_path):
+    """2026-11-24:在 A1 角标定,孔阵被认成竖向半个孔距 → 7.59 mm。给了板型就按标准孔距去认。"""
+    stage = TrackedStage(120.0, 90.0, z=8.0)
+    M = camera_matrix(px_per_mm=16.4, rot_deg=0.0, mirrored=False)
+    cam = CornerCamera(stage, M, (118.4, 91.7), z_focus=8.0, content=False)
+    al = align.Aligner(cam, stage, cal_file=tmp_path / "cal.json")
+    cal = al.calibrate(step_mm=2.0, pitch_mm=9.0)
+    assert abs(cal["plate_pitch_mm"] - 9.0) < 0.3, cal["plate_pitch_mm"]
+    assert np.abs(np.array(cal["M"]) - M).max() / 16.4 < 0.02

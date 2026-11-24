@@ -24,6 +24,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+import autofocus
 import wellgrid
 from image_store import BASE_DIR
 
@@ -38,6 +39,22 @@ FEED = 1200           # 对准/标定时的移动速度 (mm/min)
 # 从两边接近差 0.7–1.6 mm。只要永远从同一方向接近,到位时滞后量一样,位置就可重复。
 # 这个距离要大于滞后带宽度,才能让「同向滞后」充分建立。
 ANTI_BACKLASH_MM = 2.5
+
+# 标定前先找焦面。2026-11-24 机器搬进培养箱时磕了一下,焦面从 Z 8–10 mm 跑到约 17 mm
+# (超出 15 mm 行程);那次标定是在糊的画面上做的,孔距被认成 115 px (清楚时约 159 px),
+# 却照样通过了。所以标定先把整个 Z 行程扫一遍,找到焦点再走 X/Y。
+FOCUS_COARSE_MM = 0.5     # 全行程粗扫步长 (清晰度峰宽约 ±1 mm,见 scan.AF_STEP_MM)
+FOCUS_FINE_MM = 0.1       # 粗扫峰附近细扫的步长
+FOCUS_FINE_HALF_MM = 0.6  # 细扫范围:粗扫峰 ± 这么多
+FOCUS_MIN_GAIN = 1.5      # 最清楚一帧 / 最糊一帧 的清晰度至少这么多,否则曲线是平的 = 没东西可对焦
+FOCUS_SUGGEST_Z = 9.0     # 焦点跑出行程时,建议把 Z 放在这里再拧镜头 (以前的孔底平面 8–10 mm)
+Z_APPROACH_MM = 0.3       # Z 总是从下方接近目标 (丝杆回程间隙),和 scan.py 一致
+Z_FEED = 300              # mm/min
+Z_SETTLE_S = 0.2
+
+# 标定完用板子当尺子核对:画面里的孔距 ÷ 标定比例 应接近板子的标准孔距。
+# 小步标定比例偏差约 4% (见 platefind.IMAGE_TOL);认错周期时差 25% 以上。
+PITCH_CHECK_TOL = 0.10
 
 
 class AlignError(RuntimeError):
@@ -92,6 +109,40 @@ def check_matrix(M: np.ndarray) -> tuple[list[str], dict]:
         "mirrored": bool(np.linalg.det(M) < 0),
     }
     return problems, info
+
+
+def pick_focus(curve: list[tuple[float, float]]) -> dict:
+    """全行程粗扫曲线 [(z, 清晰度)] (z 从小到大) → 焦点在哪,或为什么找不到。
+
+    取全程最清楚的一点。它落在行程的第一个或最后一个点上 = 到头了还在变清楚,
+    焦点在行程外 (status "below" / "above"),不猜;整条曲线差不多平 = 画面里
+    没有能对焦的东西 ("flat")。
+    """
+    zs = [c[0] for c in curve]
+    vals = [c[1] for c in curve]
+    i = int(np.argmax(vals))
+    gain = float(vals[i] / max(min(vals), 1e-9))
+    out = {"z": float(zs[i]), "gain": round(gain, 2)}
+    if gain < FOCUS_MIN_GAIN:
+        return {**out, "status": "flat"}
+    if i == len(vals) - 1:
+        return {**out, "status": "above"}
+    if i == 0:
+        return {**out, "status": "below"}
+    return {**out, "status": "ok"}
+
+
+def refine_peak(curve: list[tuple[float, float]]) -> float:
+    """细扫曲线的峰:最高点,两边都有点时用抛物线插值到亚步长。"""
+    zs = [c[0] for c in curve]
+    vals = [c[1] for c in curve]
+    i = int(np.argmax(vals))
+    z = float(zs[i])
+    if 0 < i < len(vals) - 1:
+        den = vals[i - 1] - 2 * vals[i] + vals[i + 1]
+        if den < 0:
+            z += 0.5 * (zs[i + 1] - zs[i]) * (vals[i - 1] - vals[i + 1]) / den
+    return z
 
 
 class Aligner:
@@ -154,15 +205,83 @@ class Aligner:
         self.stage.wait_moves()
         time.sleep(SETTLE_S)
 
+    # ── 对焦 ──
+
+    def _z_travel(self) -> tuple[float, float]:
+        st = self.stage.status()
+        if "z" not in (st.get("homed") or "").lower():
+            raise AlignError("Z not homed — home first")
+        lo = (st.get("axis_minimum") or [None] * 3)[2]
+        hi = (st.get("axis_maximum") or [None] * 3)[2]
+        if lo is None or hi is None or hi <= lo:
+            raise AlignError("Z travel limits unknown — is Klipper reporting axis_minimum/axis_maximum?")
+        return float(lo), float(hi)
+
+    def _z_goto(self, z: float, lo: float) -> None:
+        """从下方接近 z (消丝杆回程),停稳后返回。"""
+        self.stage.move(z=round(max(lo, z - Z_APPROACH_MM), 3), feed=Z_FEED)
+        self.stage.move(z=round(z, 3), feed=Z_FEED)
+        self.stage.wait_moves()
+        time.sleep(Z_SETTLE_S)
+
+    def _z_sweep(self, zs: list[float], lo: float) -> list[tuple[float, float]]:
+        """从下往上逐点测整帧清晰度 (先退到第一个点下方,之后一直往上走)。"""
+        self.stage.move(z=round(max(lo, zs[0] - Z_APPROACH_MM), 3), feed=Z_FEED)
+        curve = []
+        for z in zs:
+            self.stage.move(z=round(z, 3), feed=Z_FEED)
+            self.stage.wait_moves()
+            time.sleep(Z_SETTLE_S)
+            curve.append((round(z, 3), autofocus.sharpness(autofocus.to_gray(self.grab()))))
+        return curve
+
+    def find_focus(self) -> dict:
+        """在当前 X/Y 把整个 Z 行程粗扫一遍,再在峰附近细扫,停在焦点上。
+
+        焦点在行程外 / 画面里没东西可对焦就报错,Z 留在最后扫到的地方。
+        返回 {z, gain, coarse, fine} (曲线是 [z, 清晰度] 列表,存进标定文件备查)。
+        """
+        lo, hi = self._z_travel()
+        n = int(math.floor((hi - lo) / FOCUS_COARSE_MM + 1e-9))
+        coarse = self._z_sweep([lo + k * FOCUS_COARSE_MM for k in range(n + 1)], lo)
+        pick = pick_focus(coarse)
+        if pick["status"] == "flat":
+            raise AlignError(
+                f"no focus found between Z {lo:g} and {hi:g} mm (sharpness changes only "
+                f"{pick['gain']:.2f}×) — is the plate in view and lit? If it is, the lens focus "
+                f"may be far off: move Z to about {FOCUS_SUGGEST_Z:g} mm and turn the lens focus ring "
+                "until the wells are sharp.")
+        if pick["status"] in ("above", "below"):
+            end = hi if pick["status"] == "above" else lo
+            raise AlignError(
+                f"focus is {pick['status']} the Z travel: the image is still getting sharper at "
+                f"Z {end:g} mm (the {'top' if end == hi else 'bottom'} limit). The lens focus has "
+                f"probably moved — move Z to about {FOCUS_SUGGEST_Z:g} mm, turn the lens focus ring "
+                f"until the wells are sharp, then calibrate again.")
+        zc = pick["z"]
+        a, b = max(lo, zc - FOCUS_FINE_HALF_MM), min(hi, zc + FOCUS_FINE_HALF_MM)
+        m = int(math.floor((b - a) / FOCUS_FINE_MM + 1e-9))
+        fine = self._z_sweep([a + k * FOCUS_FINE_MM for k in range(m + 1)], lo)
+        z = min(hi, max(lo, refine_peak(fine)))
+        self._z_goto(z, lo)
+        rnd = lambda c: [[z_, round(float(s), 2)] for z_, s in c]  # noqa: E731
+        return {"z": round(z, 3), "gain": pick["gain"], "coarse": rnd(coarse), "fine": rnd(fine)}
+
     # ── 标定 ──
 
-    def calibrate(self, step_mm: float = 2.0, steps: int = 3) -> dict:
+    def calibrate(self, step_mm: float = 2.0, steps: int = 3, *, focus: bool = False,
+                  pitch_mm: float | None = None) -> dict:
         """沿 X、Y 各走 steps 步 (每步 step_mm,全部单向接近),测每步的画面平移,
         取平均得到标定矩阵并保存。结束时回到起点,并检查回到起点的重复精度。
 
         step_mm 要明显小于半个孔距 (96 孔板 4.5 mm),否则规则孔阵会让平移测量有歧义。
+        focus=True:先在原地找焦点 (find_focus),找不到就不标定。API 默认开;
+        这里默认关,是因为单测的假平台没有 Z。
+        pitch_mm:板子的标准孔距。给了就核对画面里的孔距 —— 认错周期 (画面太糊时会)
+        的标定会被拒绝。
         """
         p0 = self.position()
+        foc = self.find_focus() if focus else None
         walks: dict[str, list[np.ndarray]] = {}
         try:
             for ax, unit in (("x", np.array([1.0, 0.0])), ("y", np.array([0.0, 1.0]))):
@@ -202,6 +321,11 @@ class Aligner:
             spread = (max(norms) - min(norms)) / max(np.mean(norms), 1e-9)
             if spread > 0.25:
                 problems.append(f"{ax.upper()} steps uneven ({spread:.0%}) — stage slipping or binding?")
+        pitch_img_mm = float(lat["pitch_px"]) / info["px_per_mm"] if info else None
+        if pitch_mm and pitch_img_mm and abs(pitch_img_mm / pitch_mm - 1) > PITCH_CHECK_TOL:
+            problems.append(
+                f"wells measure {pitch_img_mm:.2f} mm apart, expected {pitch_mm:g} mm — "
+                "image too blurry to recognise the wells, or a different plate format?")
         if problems:
             raise AlignError("calibration rejected: " + "; ".join(problems))
         # 同一位置、同一接近方向:画面应几乎不动 (检查重复精度 / 丢步)
@@ -217,6 +341,8 @@ class Aligner:
             "match_min": round(min(matches), 3),
             # 用板子 (标准孔距) 当尺子:平台每「指令毫米」实际走多少真实毫米 (仅供诊断)
             "plate_pitch_px": round(float(lat["pitch_px"]), 2),
+            "plate_pitch_mm": round(pitch_img_mm, 3),
+            "focus": foc,  # None = 这次没找焦点 (沿用当时的 Z)
             "created": datetime.now().isoformat(timespec="seconds"),
             **info,
         }

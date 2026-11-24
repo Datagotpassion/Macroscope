@@ -284,9 +284,9 @@ export default function PlateMap({ experiment = "" }) {
   const calibrate = () =>
     run(async () => {
       setJob(t("mapCalibrating"));
-      const c = await alignCalibrate();
+      const c = await alignCalibrate(AUTO_FORMATS.includes(plate.format) ? plate.format : null);
       setCal(c);
-      setInfo(t("mapCalResult", c.px_per_mm?.toFixed(2), c.repeatability_mm));
+      setInfo(t("mapCalResult", c.px_per_mm?.toFixed(2), c.repeatability_mm, c.focus?.z));
     });
 
   const findPlate = () =>

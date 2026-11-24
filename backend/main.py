@@ -25,7 +25,7 @@ import beat
 import wellgrid
 from align import AlignError, Aligner
 from camera import CameraController, _log
-from platefind import PlateFinder
+from platefind import FORMATS as PLATE_FORMATS, PlateFinder
 from scan import ScanError, Shooter
 from image_store import ImageStore
 from plate_detector import PlateDetector
@@ -461,11 +461,20 @@ async def _motion(fn, *args):
 
 
 @app.post("/api/align/calibrate")
-async def align_calibrate(step_mm: float = 2.0):
-    """一次性标定:平台沿 X/Y 各走几小步,测画面平移,保存像素↔毫米矩阵。需板子在画面里。"""
+async def align_calibrate(step_mm: float = 2.0, focus: bool = True, fmt: int | None = None):
+    """一次性标定:先在原地把 Z 全行程扫一遍找焦点 (focus=false 跳过),再让平台沿 X/Y
+    各走几小步,测画面平移,保存像素↔毫米矩阵。需板子在画面里。约 1.5–2 分钟。
+
+    fmt:板型 (24/48/96)。给了就用它的标准孔距核对画面里的孔距,认错周期的标定会被拒绝。
+    """
     _require_real_camera()
     step_mm = max(0.5, min(4.0, step_mm))  # 必须小于半个孔距 (96 孔板 4.5 mm)
-    return await _motion(aligner.calibrate, step_mm)
+    pitch_mm = PLATE_FORMATS[fmt][2] if fmt in PLATE_FORMATS else None
+    res = await _motion(functools.partial(aligner.calibrate, step_mm, focus=focus, pitch_mm=pitch_mm))
+    foc = res.get("focus") or {}
+    _log(f"[align] calibrated px/mm={res.get('px_per_mm')} pitch_mm={res.get('plate_pitch_mm')} "
+         f"focus_z={foc.get('z')} gain={foc.get('gain')}")
+    return res
 
 
 @app.get("/api/align/calibration")

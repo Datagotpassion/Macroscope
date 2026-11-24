@@ -230,7 +230,9 @@ export async function alignCalibration() {
   const r = await fetch(u("/api/align/calibration"));
   return r.json(); // 未标定时为 {}
 }
-export const alignCalibrate = () => stagePost("/api/align/calibrate");
+// 标定相机:Pi 先把 Z 全行程扫一遍找焦点,再走 X/Y。fmt (24/48/96) 让 Pi 用板子孔距核对结果。
+export const alignCalibrate = (fmt) =>
+  stagePost(fmt ? `/api/align/calibrate?fmt=${fmt}` : "/api/align/calibrate");
 export const plateFind = (fmt) => stagePost(`/api/plate/find?fmt=${fmt}`);
 
 // 一键拍全板:开拍前自检 (没回零会自动回零)

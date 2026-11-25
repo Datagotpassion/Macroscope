@@ -148,3 +148,37 @@ def test_texture_without_wells_is_not_reliable():
     img = cv2.GaussianBlur(img, (0, 0), 1.5)
     res = wellgrid.find_well_lattice(cv2.cvtColor(img, cv2.COLOR_GRAY2BGR))
     assert not res.get("reliable"), res
+
+
+def yellow_medium_corner(pitch=158.0, origin=(500.0, 380.0)):
+    """板角 + 孔里是黄色培养液 (实拍 2026-11-25):孔在灰度里和板子差不多亮、没有清楚的孔壁,
+    画面左上大片是板外的暗区。返回 (BGR 图, a, b, o)。"""
+    a, b, o = np.array([pitch, 0.0]), np.array([0.0, pitch]), np.array(origin)
+    img = np.zeros((H, W, 3), np.float32)
+    img[:] = (20, 20, 20)                                     # 板外 (暗)
+    x0, y0 = int(o[0] - 0.95 * pitch), int(o[1] - 1.4 * pitch)
+    img[y0:, x0:] = (187, 187, 184)                           # 板子 (中性浅灰)
+    for i in range(0, 4):
+        for j in range(0, 3):
+            c = o + i * a + j * b
+            cv2.circle(img, (int(round(c[0])), int(round(c[1]))), int(0.42 * pitch), (130, 178, 186), -1, cv2.LINE_AA)
+            cv2.circle(img, (int(round(c[0])), int(round(c[1]))), 3, (60, 60, 60), -1, cv2.LINE_AA)  # 孔底的样品
+    img = cv2.GaussianBlur(img, (0, 0), 2.5) + np.random.default_rng(3).normal(0, 3, img.shape)
+    return np.clip(img, 0, 255).astype(np.uint8), a, b, o
+
+
+def test_coloured_medium_falls_back_to_the_min_channel():
+    img, a, b, o = yellow_medium_corner()
+    gray_only = wellgrid._find_lattice(img, 158.0 * 1.01, wellgrid.WORK_WIDTH, wellgrid._gray)
+    assert not gray_only.get("reliable"), gray_only  # 灰度认不出 —— 这正是要测的情况
+    res = wellgrid.find_well_lattice(img, expected_pitch_px=158.0 * 1.01)
+    assert res["reliable"] and res["channel"] == "min", res
+    assert abs(res["pitch_px"] - 158.0) / 158.0 < 0.02, res["pitch_px"]
+    err = np.array(res["offset"]) - truth_offset(a, b, o)
+    assert np.hypot(*err) < 2.0
+
+
+def test_neutral_plate_still_uses_gray():
+    img, a, b, o = render(148.0, 1.0)
+    res = wellgrid.find_well_lattice(img)
+    assert res["reliable"] and res["channel"] == "gray"

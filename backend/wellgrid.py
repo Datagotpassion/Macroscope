@@ -51,6 +51,13 @@ def _gray(img: np.ndarray) -> np.ndarray:
     return g.astype(np.float32)
 
 
+def _min_channel(img: np.ndarray) -> np.ndarray:
+    """逐像素取 B/G/R 最小值。有颜色的培养液总会吸收某个颜色 (黄色吸蓝、粉红吸绿),
+    在灰度里孔和板子差不多亮 (实测 2026-11-25 黄色培养液:灰度 175 vs 186,蓝 130 vs 187),
+    取最小通道后孔就是明显的暗盘;中性的板子/孔壁在三个通道里一样,不受影响。"""
+    return img.min(axis=2).astype(np.float32) if img.ndim == 3 else img.astype(np.float32)
+
+
 def lattice_vectors(
     gray: np.ndarray, expected: float | None = None
 ) -> tuple[np.ndarray, np.ndarray, float] | None:
@@ -172,12 +179,28 @@ def find_well_lattice(
     返回 dict:ok / reason,a、b (基向量), pitch_px, angle_deg (a 相对图像 x 轴),
     nearest (离画面中心最近的孔中心), offset (nearest − 画面中心), n (参与投票的格点数),
     periodicity (自相关峰强 0..1), contrast (真孔位置 vs 半格错位位置的响应比, >1 越大越可靠),
-    reliable (三项指标都过门槛;自动对准只应使用 reliable 的结果)。
+    reliable (三项指标都过门槛;自动对准只应使用 reliable 的结果),
+    channel ("gray" / "min":用哪种单通道图认出来的)。
+
+    先按灰度认;认不出 (不 reliable) 且是彩色图时,再用逐像素最小通道认一次 (有颜色的培养液,
+    见 _min_channel)。灰度认得出的帧结果和以前完全一样。
     """
+    res = _find_lattice(image, expected_pitch_px, work_width, _gray)
+    res["channel"] = "gray"
+    if res.get("reliable") or image.ndim != 3:
+        return res
+    alt = _find_lattice(image, expected_pitch_px, work_width, _min_channel)
+    if alt.get("reliable"):
+        alt["channel"] = "min"
+        return alt
+    return res
+
+
+def _find_lattice(image: np.ndarray, expected_pitch_px: float | None, work_width: int, to_gray) -> dict:
     H, W = image.shape[:2]
     s = min(1.0, work_width / W)
     small = cv2.resize(image, (int(round(W * s)), int(round(H * s))), interpolation=cv2.INTER_AREA) if s < 1 else image
-    g = _gray(small)
+    g = to_gray(small)
     h, w = g.shape
 
     lv = lattice_vectors(g, expected_pitch_px * s if expected_pitch_px else None)

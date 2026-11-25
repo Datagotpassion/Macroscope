@@ -57,7 +57,8 @@ def edge_side(scores: dict[int, float]) -> tuple[int, int]:
     if len(ins) < 2:
         raise AlignError("too few wells in view to locate the plate edge")
     if not outs:
-        raise AlignError("plate edge not in view — move the camera closer to the A1 corner")
+        raise AlignError("plate edge not in view — put the A1 well in the centre of the preview "
+                         "(only one row of wells above and below the centre is checked)")
     if outs[-1] < ins[0]:
         return ins[0], +1     # 板外在负方向 → 板子往正方向延伸
     if outs[0] > ins[-1]:

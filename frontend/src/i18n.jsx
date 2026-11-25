@@ -40,7 +40,7 @@ const translations = {
     mapCalResult: (scale, repeat, z) =>
       `${z != null ? `焦点 Z ${z} mm，` : ""}标定完成，比例 ${scale} px/mm，重复定位误差 ${repeat} mm。`,
     mapFind: "从可见的 A1 建图",
-    mapFindHint: "先标定相机，再让实际 A1 和两条外侧板边进入预览。建图完成后会更新本板的三个角孔。",
+    mapFindHint: "先标定相机，再把实际的 A1 孔移到预览中央（两条外侧板边也要在画面里）。建图完成后会更新本板的三个角孔。",
     mapManualHint: "此规格请手动记录三个角孔。",
     mapFinding: (name) => `正在定位 ${name} 的三个角孔，约需 1–2 分钟…`,
     mapFound: (name, pitch, angle) => `已更新 ${name} 的角孔。孔距 ${pitch} mm，夹角 ${angle}°。请在预览中核对 A1。`,
@@ -223,7 +223,7 @@ const translations = {
     mapCalResult: (scale, repeat, z) =>
       `${z != null ? `Focused at Z ${z} mm. ` : ""}Calibrated at ${scale} px/mm with ${repeat} mm repeatability.`,
     mapFind: "Map from visible A1",
-    mapFindHint: "Calibrate the camera and bring the physical A1 and both outer edges into view. Mapping updates this plate’s three corners.",
+    mapFindHint: "Calibrate the camera, then put the physical A1 well in the centre of the preview with both outer plate edges in view. Mapping updates this plate’s three corners.",
     mapManualHint: "Record all three corners manually for this format.",
     mapFinding: (name) => `Locating the corners of ${name}. This takes 1–2 minutes…`,
     mapFound: (name, pitch, angle) => `Mapped ${name} at ${pitch} mm pitch and ${angle}°. Check A1 in the preview.`,
